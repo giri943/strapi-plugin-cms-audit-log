@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3
+
+- The Audit Log settings page ends with a one-line footer: a link to sponsor the plugin and a link to report an issue. Nothing is added to the dashboard.
+
 ## 1.0.2
 
 - Added a GitHub Sponsors link: a Sponsor button on the repository, a `funding` field for `npm fund`, and a short "Support this project" section in the README.

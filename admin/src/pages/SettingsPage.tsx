@@ -16,6 +16,7 @@ import {
 } from '@strapi/design-system';
 import { Check } from '@strapi/icons';
 import { Layouts, Page, useNotification, useRBAC } from '@strapi/strapi/admin';
+import { SupportFooter } from '../components/SupportFooter';
 import pluginPermissions, { RBAC_FLAGS, type AllowedActions } from '../permissions';
 import { api, type Category, type PluginSettings, type SettingsResponse } from '../utils/api';
 import { CATEGORY_LABELS, formatNumber } from '../utils/format';
@@ -248,6 +249,7 @@ const SettingsPage = () => {
               </Section>
             </Flex>
           )}
+          <SupportFooter />
         </Layouts.Content>
       </Page.Main>
     </Page.Protect>
