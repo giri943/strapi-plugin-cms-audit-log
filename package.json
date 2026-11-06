@@ -1,6 +1,6 @@
 {
   "name": "strapi-plugin-cms-audit-log",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Strapi 5 audit log plugin: track who changed what, with field-level before/after diffs, an activity dashboard, CSV export and signed entries.",
   "license": "MIT",
   "author": "Girish Soman (https://github.com/giri943)",

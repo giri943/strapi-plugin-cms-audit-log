@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- README: a demo video near the top.
+
 ## 1.0.3
 
 - The Audit Log settings page ends with a one-line footer: a link to sponsor the plugin and a link to report an issue. Nothing is added to the dashboard.
