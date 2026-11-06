@@ -5,6 +5,7 @@
 [![npm](https://img.shields.io/npm/v/strapi-plugin-cms-audit-log)](https://www.npmjs.com/package/strapi-plugin-cms-audit-log)
 [![CI](https://github.com/giri943/strapi-plugin-cms-audit-log/actions/workflows/ci.yml/badge.svg)](https://github.com/giri943/strapi-plugin-cms-audit-log/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Sponsor](https://img.shields.io/github/sponsors/giri943?label=Sponsor&logo=GitHub)](https://github.com/sponsors/giri943)
 
 Know who changed what in your CMS, and when. An audit trail and activity log for Strapi 5.
 
@@ -127,6 +128,10 @@ The full OWASP Top 10 review is in [docs/security.md](docs/security.md).
 ## Issues and feedback
 
 Found a bug or missing something? [Open an issue on GitHub](https://github.com/giri943/strapi-plugin-cms-audit-log/issues) with your Strapi version and the steps to reproduce it. Please report security problems privately through [GitHub security advisories](https://github.com/giri943/strapi-plugin-cms-audit-log/security/advisories/new), not as a public issue.
+
+## Support this project
+
+This plugin is free and maintained in my spare time. If it saves your team time or helps you pass an audit, you can [sponsor it on GitHub](https://github.com/sponsors/giri943). It keeps fixes and new Strapi versions coming.
 
 ## Development
 

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.2
+
+- Added a GitHub Sponsors link: a Sponsor button on the repository, a `funding` field for `npm fund`, and a short "Support this project" section in the README.
+
 ## 1.0.1
 
 - Clearer npm description and keywords, so the plugin shows up when people search for a Strapi audit log, audit trail or activity log.
