@@ -71,7 +71,15 @@ const Meta = ({ label, children }: { label: string; children: React.ReactNode })
 );
 
 /** Keys of `details` already shown elsewhere in the modal, in words. */
-const EXPLAINED_DETAILS = new Set(['contentType', 'kind', 'unchanged', 'firstPublish', 'sameAsLive', 'changesOmitted']);
+const EXPLAINED_DETAILS = new Set([
+  'contentType',
+  'kind',
+  'unchanged',
+  'firstPublish',
+  'sameAsLive',
+  'changesOmitted',
+  'savedOnPublish',
+]);
 
 /** One sentence putting the change list in context: what "before" and "after" mean here. */
 function changesIntro(entry: LogEntry): string | null {
@@ -82,6 +90,9 @@ function changesIntro(entry: LogEntry): string | null {
     case 'entry.create':
       return count > 0 ? 'What this entry was created with.' : null;
     case 'entry.update':
+      if (count > 0 && details.savedOnPublish) {
+        return 'Edited and published without saving first: these edits were saved as part of clicking Publish.';
+      }
       return count > 0 ? 'What this save changed in the draft, compared with the draft before it.' : null;
     case 'entry.publish':
       if (details.firstPublish) return 'First publish: the whole entry went live for the first time.';

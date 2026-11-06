@@ -154,6 +154,61 @@ describe('document capture', () => {
     ]);
   });
 
+  it('drops the empty save the Publish button makes, and keeps one that changed something', async () => {
+    const publishCtx = (fake: ReturnType<typeof fakeStrapi>) => {
+      fake.strapi.requestContext.get = () => ({
+        method: 'POST',
+        path: '/content-manager/collection-types/api::article.article/doc1/actions/publish',
+        request: { ip: '1.2.3.4' },
+        get: () => 'UA',
+        state: { auth: { strategy: { name: 'admin' } }, user: { id: 7, email: 'ann@example.com' } },
+      });
+    };
+
+    const alreadySaved = fakeStrapi({ stored: { title: 'Same' } });
+    publishCtx(alreadySaved);
+    await alreadySaved.capture.handleDocument(context('update', { documentId: 'doc1', data: { title: 'Same' } }), async () => ({
+      documentId: 'doc1',
+      title: 'Same',
+    }));
+    expect(alreadySaved.queued).toHaveLength(0);
+
+    let stored: Record<string, unknown> = { title: 'Old' };
+    const unsaved = fakeStrapi({ stored: () => stored });
+    publishCtx(unsaved);
+    await unsaved.capture.handleDocument(context('update', { documentId: 'doc1', data: { title: 'New' } }), async () => {
+      stored = { title: 'New' };
+      return { documentId: 'doc1', title: 'New' };
+    });
+    expect(unsaved.queued[0]).toMatchObject({
+      details: { savedOnPublish: true },
+      changes: [expect.objectContaining({ field: 'title', before: 'Old', after: 'New' })],
+    });
+  });
+
+  it("names the entry by the Content Manager's title field, whatever it is called", async () => {
+    const fake = fakeStrapi({ stored: { nrb_title: 'Annual Report 2024', financial_year: 'FY2024-2025' } });
+    fake.strapi.getModel = () => ({
+      info: { displayName: 'Annual Reports' },
+      kind: 'collectionType',
+      options: { draftAndPublish: true },
+      attributes: { nrb_title: { type: 'string', required: true }, financial_year: { type: 'enumeration' } },
+    });
+
+    await fake.capture.handleDocument(context('update', { documentId: 'doc1', data: { financial_year: 'FY2025-2026' } }), async () => ({
+      documentId: 'doc1',
+    }));
+    expect(fake.queued[0]?.targetLabel).toBe('Annual Report 2024');
+
+    // The configured entry title wins over the schema guess.
+    const configured = fakeStrapi({ stored: { nrb_title: 'Annual Report 2024', sln_title: 'SNL Report' } });
+    configured.strapi.store = { get: async () => ({ settings: { mainField: 'sln_title' } }) };
+    await configured.capture.handleDocument(context('update', { documentId: 'doc1', data: { sln_title: 'SNL Report' } }), async () => ({
+      documentId: 'doc1',
+    }));
+    expect(configured.queued[0]?.targetLabel).toBe('SNL Report');
+  });
+
   it('records what a publish put live: the old live version against the draft', async () => {
     const { capture, queued } = fakeStrapi({
       stored: (params) => (params.status === 'published' ? { title: 'Live title', views: 1 } : { title: 'Draft title', views: 1 }),

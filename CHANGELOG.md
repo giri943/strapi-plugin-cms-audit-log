@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.0-beta.4
+
+- Clicking Publish after saving no longer adds an "Updated · Saved with no changes" entry. The Content Manager's Publish button saves the form again inside the same request; when that save changes nothing, the publish entry beside it already says what went live. When it does change something (edit, then Publish without saving), it is kept and marked "saved as part of clicking Publish".
+- Entries are named by the Content Manager's entry title setting for each content type, so a type whose title field is, say, `nrb_title` shows that title instead of the document id. Types without the setting fall back to their first required text field.
+
 ## 0.1.0-beta.3
 
 - Media files and folders show what changed, before and after: name, location ("Media Library › Products" rather than `/3/12`), and for files the alternative text, caption, type, size and file. Moves are recorded, including "Move to…" on several items. Deleted files and folders keep their name and location; before, a deleted folder had neither.

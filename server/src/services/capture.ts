@@ -64,6 +64,9 @@ const VERSION_ACTIONS = new Set<WriteAction>(['publish', 'discardDraft']);
 
 const LOGIN_PATH = '/admin/login';
 
+/** The Content Manager's Publish button, which saves the form and publishes in one request. */
+const PUBLISH_REQUEST = /\/actions\/publish\/?$/;
+
 /** The Roles screen saves a role's whole permission set here in one request. */
 const ROLE_PERMISSIONS_PATH = /^\/admin\/roles\/([^/]+)\/permissions\/?$/;
 
@@ -240,6 +243,40 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
   }
 
   const models: ModelLookup = { component: schemaOf, contentType: schemaOf };
+
+  /**
+   * The field the Content Manager shows as an entry's name (its "entry title" setting), so the
+   * log names an entry the way editors see it: "Annual Report 2024-25" for a type whose title
+   * field is `nrb_title`. Falls back to the type's first required text field, then its first text
+   * field. Cached for a minute; the setting rarely changes.
+   */
+  const mainFields = new Map<string, { field: string | undefined; expires: number }>();
+  const TEXT_TYPES = new Set(['string', 'text', 'uid', 'email']);
+
+  async function mainFieldOf(uid: string): Promise<string | undefined> {
+    const cached = mainFields.get(uid);
+    if (cached && cached.expires > Date.now()) return cached.field;
+
+    let field: string | undefined;
+    try {
+      const stored = (await strapi.store?.get({
+        type: 'plugin',
+        name: 'content_manager',
+        key: `configuration_content_types::${uid}`,
+      })) as { settings?: { mainField?: unknown } } | null | undefined;
+      const configured = stored?.settings?.mainField;
+      if (typeof configured === 'string' && configured !== 'id' && configured !== 'documentId') field = configured;
+    } catch {
+      // Fall back to the schema below.
+    }
+    if (!field) {
+      const attributes = Object.entries(schemaOf(uid)?.attributes ?? {}).filter(([, attribute]) => TEXT_TYPES.has(attribute.type));
+      field = (attributes.find(([, attribute]) => attribute.required === true) ?? attributes[0])?.[0];
+    }
+
+    mainFields.set(uid, { field, expires: Date.now() + 60_000 });
+    return field;
+  }
 
   /** The locale a Document Service call without one acts on: the default locale. */
   async function localeOf(uid: string, locale: string | undefined): Promise<string | undefined> {
@@ -789,6 +826,14 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
         if (failure) details.error = errorSummary(failure);
         if (action === 'clone' && documentId) details.sourceDocumentId = documentId;
         if (manyLocales) details.allLocales = true;
+        // The Content Manager's Publish button saves the form first, inside the same request. When
+        // that save changes nothing (the editor had already saved), it is not an action of its
+        // own: the publish entry beside it says what went live. When it does change something
+        // (edit, then Publish without saving), it is kept and marked as such.
+        const savedOnPublish = action === 'update' && PUBLISH_REQUEST.test(ctx?.path ?? '');
+        if (savedOnPublish && !failure && changes && changes.length === 0) return;
+        if (savedOnPublish) details.savedOnPublish = true;
+
         if (action === 'update' && !failure && changes && changes.length === 0) details.unchanged = true;
         if (found && found.omitted > 0) details.changesOmitted = found.omitted;
         if (action === 'publish' && !failure && versions) {
@@ -808,9 +853,16 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
             request: requestInfo(ctx),
             targetUid: uid,
             targetId: action === 'clone' ? (documentIdOf(result) ?? documentId) : targetId,
-            targetLabel: entryLabel(
-              after ?? before ?? versions?.draft ?? firstEntry ?? (result as Record<string, unknown>) ?? data
-            ),
+            targetLabel: await (async () => {
+              // The first record that actually carries a name: a save's return value or `data`
+              // may hold only the fields that were sent.
+              const mainField = await mainFieldOf(uid);
+              for (const candidate of [after, before, versions?.draft, firstEntry, result, data]) {
+                const label = entryLabel(candidate as Record<string, unknown> | null | undefined, mainField);
+                if (label) return label;
+              }
+              return undefined;
+            })(),
             localeCode: locale && locale !== '*' ? locale : undefined,
             changes,
             details,
