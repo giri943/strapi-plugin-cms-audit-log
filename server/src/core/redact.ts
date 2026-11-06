@@ -1,6 +1,7 @@
 import { ALWAYS_REDACTED_PATTERNS, LIMITS, REDACTED } from '../constants';
 
-const MAX_DEPTH = 6;
+// Deep enough for a dynamic zone block several components down; a page builder nests that far.
+const MAX_DEPTH = 24;
 const MAX_ARRAY_ITEMS = 50;
 const MAX_OBJECT_KEYS = 100;
 

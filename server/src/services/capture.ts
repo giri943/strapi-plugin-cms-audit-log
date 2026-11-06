@@ -7,7 +7,15 @@ import {
   type WriteAction,
 } from '../constants';
 import { resolveActor, requestInfo, type RequestLike } from '../core/actor';
-import { diffDocument, type AttributeInfo } from '../core/diff';
+import {
+  buildPopulate,
+  diffDocumentDetailed,
+  summariseRelationWrite,
+  type AttributeInfo,
+  type DiffResult,
+  type ModelLookup,
+  type SchemaInfo,
+} from '../core/diff';
 import { mapEvent } from '../core/events';
 import { entryLabel } from '../core/labels';
 import { createSensitiveKeyMatcher } from '../core/redact';
@@ -37,6 +45,9 @@ const ACTION_NAMES: Record<WriteAction, string> = {
 
 /** Attribute types whose stored value is only visible with `populate`. */
 const POPULATED_TYPES = new Set(['component', 'dynamiczone', 'media']);
+
+/** Actions that compare the draft with the published version, rather than with `data`. */
+const VERSION_ACTIONS = new Set<WriteAction>(['publish', 'discardDraft']);
 
 const LOGIN_PATH = '/admin/login';
 
@@ -142,21 +153,81 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
     return model?.options?.draftAndPublish === true;
   }
 
+  function schemaOf(uid: string): SchemaInfo | undefined {
+    const model = strapi.getModel(uid as never) as
+      | { attributes?: Record<string, AttributeInfo>; info?: { displayName?: string } }
+      | undefined;
+    return model?.attributes ? { attributes: model.attributes, displayName: model.info?.displayName } : undefined;
+  }
+
+  const models: ModelLookup = { component: schemaOf, contentType: schemaOf };
+
+  /** The locale a Document Service call without one acts on: the default locale. */
+  async function localeOf(uid: string, locale: string | undefined): Promise<string | undefined> {
+    if (!isLocalized(uid)) return undefined;
+    if (locale && locale !== '*') return locale;
+
+    const locales = strapi.plugin('i18n')?.service('locales') as { getDefaultLocale?: () => Promise<string> } | undefined;
+    const fallback = await locales?.getDefaultLocale?.();
+    if (!fallback) throw new Error('default locale unknown');
+    return fallback;
+  }
+
   /**
-   * Reads the stored draft of a document for the diff. Failure is not fatal: without the
-   * before state the entry is still written, with every submitted field shown as new.
+   * One stored version, read with the query engine.
+   *
+   * Same rows and the same shape as `strapi.documents().findOne()`, without the Document
+   * Service's per-relation draft/published handling: on a page builder with files and relations
+   * in every section that took a deep load from about 150 ms to about 25 ms.
+   */
+  async function loadFast(
+    uid: string,
+    documentId: string,
+    locale: string | undefined,
+    keys: readonly string[] | undefined,
+    status: 'draft' | 'published'
+  ): Promise<Record<string, unknown> | null> {
+    const attributes = schemaOf(uid)?.attributes ?? {};
+    const where: Record<string, unknown> = { documentId };
+    if (hasDraftAndPublish(uid)) where.publishedAt = status === 'draft' ? null : { $notNull: true };
+    const resolvedLocale = await localeOf(uid, locale);
+    if (resolvedLocale) where.locale = resolvedLocale;
+
+    const populate = keys && keys.length > 0 ? buildPopulate(attributes, models, keys, 0, 'query') : undefined;
+    const query = strapi.db.query(uid as never) as unknown as {
+      findOne(params: Record<string, unknown>): Promise<Record<string, unknown> | null>;
+    };
+    return (await query.findOne(populate ? { where, populate } : { where })) ?? null;
+  }
+
+  /**
+   * Reads a stored version of a document for the diff, with the given fields populated to their
+   * full depth. Failure is not fatal: without the before state the entry is still written, with
+   * every submitted field shown as new.
    */
   async function loadDocument(
     uid: string,
     documentId: string,
     locale: string | undefined,
-    populate: Record<string, true> | undefined
+    keys: readonly string[] | undefined,
+    status: 'draft' | 'published' = 'draft'
   ): Promise<Record<string, unknown> | null> {
+    try {
+      return await loadFast(uid, documentId, locale, keys, status);
+    } catch (fastError) {
+      strapi.log.debug(
+        `[${PLUGIN_NAME}] Query engine read of ${uid} ${documentId} failed, using the Document Service: ${
+          fastError instanceof Error ? fastError.message : String(fastError)
+        }`
+      );
+    }
+
     try {
       const query: Record<string, unknown> = { documentId };
       if (locale && locale !== '*' && isLocalized(uid)) query.locale = locale;
-      if (hasDraftAndPublish(uid)) query.status = 'draft';
-      if (populate && Object.keys(populate).length > 0) query.populate = populate;
+      if (hasDraftAndPublish(uid)) query.status = status;
+      const populate = keys && keys.length > 0 ? buildPopulate(schemaOf(uid)?.attributes ?? {}, models, keys) : undefined;
+      if (populate) query.populate = populate;
 
       const documents = strapi.documents(uid as never) as unknown as {
         findOne(params: Record<string, unknown>): Promise<Record<string, unknown> | null>;
@@ -172,18 +243,43 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
     }
   }
 
+  /**
+   * What to load around a create or update: the components, dynamic zones and files the save
+   * sent, to their full depth, and the relations it actually touched. An untouched relation is
+   * left unloaded; on a large many-to-many that is most of the cost.
+   */
   function populateFor(
     attributes: Record<string, AttributeInfo>,
     data: Record<string, unknown> | undefined
-  ): Record<string, true> | undefined {
+  ): string[] | undefined {
     if (!data) return undefined;
 
-    const populate: Record<string, true> = {};
-    for (const field of Object.keys(data)) {
+    const keys = Object.keys(data).filter((field) => {
       const type = attributes[field]?.type;
-      if (type && POPULATED_TYPES.has(type)) populate[field] = true;
-    }
-    return Object.keys(populate).length > 0 ? populate : undefined;
+      if (!type) return false;
+      if (POPULATED_TYPES.has(type)) return true;
+      return type === 'relation' && summariseRelationWrite(data[field]) !== null;
+    });
+    return keys.length > 0 ? keys : undefined;
+  }
+
+  function diff(
+    mode: 'create' | 'update' | 'compare',
+    attributes: Record<string, AttributeInfo>,
+    before: Record<string, unknown> | null,
+    after: Record<string, unknown> | null,
+    current: PluginSettings,
+    data?: Record<string, unknown>
+  ): DiffResult {
+    return diffDocumentDetailed({
+      mode,
+      data,
+      before,
+      after,
+      attributes,
+      isSensitive: createSensitiveKeyMatcher(current.redactedFields),
+      getComponent: (componentUid) => models.component(componentUid),
+    });
   }
 
   return {
@@ -220,12 +316,23 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
         {}) as Record<string, AttributeInfo>;
       const documentId = typeof params.documentId === 'string' ? params.documentId : undefined;
       const locale = typeof params.locale === 'string' ? params.locale : undefined;
+      const manyLocales = Array.isArray(params.locale) || params.locale === '*';
       const populate = action === 'update' || action === 'create' ? populateFor(attributes, data) : undefined;
 
       const before =
         documentId && (action === 'update' || action === 'delete')
           ? await loadDocument(uid, documentId, locale, action === 'update' ? populate : undefined)
           : null;
+
+      // Publishing replaces the live version with the draft; discarding replaces the draft with
+      // the live version. The version about to be replaced is read now, while it still exists.
+      // The other one is not changed by the action, so it is read afterwards with the rest.
+      const compareVersions =
+        VERSION_ACTIONS.has(action) && Boolean(documentId) && !manyLocales && hasDraftAndPublish(uid);
+      const everything = Object.keys(attributes);
+      const replaced = compareVersions
+        ? await loadDocument(uid, documentId as string, locale, everything, action === 'publish' ? 'published' : 'draft')
+        : null;
 
       let result: unknown;
       let failure: unknown;
@@ -234,8 +341,9 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
       } catch (error) {
         failure = error;
       }
+      const occurredAt = new Date();
 
-      try {
+      const record = async () => {
         const targetId = documentId ?? documentIdOf(result);
         const firstEntry = Array.isArray((result as { entries?: unknown[] })?.entries)
           ? ((result as { entries: Record<string, unknown>[] }).entries[0] ?? null)
@@ -249,17 +357,31 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
               : ((result as Record<string, unknown>) ?? null);
         }
 
-        let changes: FieldChange[] | undefined;
-        if ((action === 'update' || action === 'create') && data) {
-          changes = diffDocument({
-            mode: action,
-            data,
-            before,
-            after,
-            attributes,
-            isSensitive: createSensitiveKeyMatcher(current.redactedFields),
-          });
+        let versions: { draft: Record<string, unknown> | null; published: Record<string, unknown> | null } | null =
+          null;
+        if (compareVersions && !failure) {
+          const kept = await loadDocument(
+            uid,
+            documentId as string,
+            locale,
+            everything,
+            action === 'publish' ? 'draft' : 'published'
+          );
+          versions = action === 'publish' ? { draft: kept, published: replaced } : { draft: replaced, published: kept };
         }
+
+        let found: DiffResult | undefined;
+        if ((action === 'update' || action === 'create') && data) {
+          found = diff(action, attributes, before, after, current, data);
+        } else if (!failure && versions?.draft) {
+          // publish: live version → draft that went live. discardDraft: draft → live version.
+          if (action === 'publish' && versions.published) {
+            found = diff('compare', attributes, versions.published, versions.draft, current);
+          } else if (action === 'discardDraft' && versions.published) {
+            found = diff('compare', attributes, versions.draft, versions.published, current);
+          }
+        }
+        const changes: FieldChange[] | undefined = found?.changes;
 
         const model = strapi.getModel(uid as never) as
           | { info?: { displayName?: string }; kind?: string }
@@ -271,8 +393,16 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
         };
         if (failure) details.error = errorSummary(failure);
         if (action === 'clone' && documentId) details.sourceDocumentId = documentId;
-        if (locale === '*') details.allLocales = true;
+        if (manyLocales) details.allLocales = true;
         if (action === 'update' && !failure && changes && changes.length === 0) details.unchanged = true;
+        if (found && found.omitted > 0) details.changesOmitted = found.omitted;
+        if (action === 'publish' && !failure && versions) {
+          if (!versions.published) details.firstPublish = true;
+          else if (changes && changes.length === 0) details.sameAsLive = true;
+        }
+        if (action === 'discardDraft' && !failure && versions && changes && changes.length === 0) {
+          details.sameAsLive = true;
+        }
 
         enqueue(
           {
@@ -283,25 +413,39 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
             request: requestInfo(ctx),
             targetUid: uid,
             targetId: action === 'clone' ? (documentIdOf(result) ?? documentId) : targetId,
-            targetLabel: entryLabel(after ?? before ?? firstEntry ?? (result as Record<string, unknown>) ?? data),
+            targetLabel: entryLabel(
+              after ?? before ?? versions?.draft ?? firstEntry ?? (result as Record<string, unknown>) ?? data
+            ),
             localeCode: locale && locale !== '*' ? locale : undefined,
             changes,
             details,
-            occurredAt: new Date(),
+            occurredAt,
           },
           current
         );
-      } catch (error) {
-        strapi.log.error(
-          `[${PLUGIN_NAME}] Could not record ${action} on ${uid}: ${
-            error instanceof Error ? error.message : String(error)
-          }`
-        );
-      }
+      };
+
+      const recordSafely = async () => {
+        try {
+          await record();
+        } catch (error) {
+          strapi.log.error(
+            `[${PLUGIN_NAME}] Could not record ${action} on ${uid}: ${
+              error instanceof Error ? error.message : String(error)
+            }`
+          );
+        }
+      };
+
+      // Read back before answering. Deferring this to after the response was tried and measured:
+      // it saved about 25 ms on a large page, but a quick second save (or Save then Publish) could
+      // land first, and its changes were then attributed to this entry.
+      await recordSafely();
 
       if (failure) throw failure;
       return result;
     },
+
 
     /** Event hub subscriber for media, auth, admin users, roles and schema changes. */
     async handleEvent(name: string, payload: unknown): Promise<void> {

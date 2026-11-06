@@ -7,7 +7,10 @@ Works with Strapi 5. Tested on 5.0.0 and 5.61.0. It does not support Strapi 4.
 ## What it records
 
 - **Content:** create, update, delete, publish, unpublish, discard draft and duplicate, for every content type.
-  - Updates store a before/after value for each field that actually changed.
+  - Updates store a before/after value for each field that actually changed, at any depth. An edit to one card inside one section of a dynamic zone is recorded as that one field, with a readable location such as `layouts #2 · Home layout › section four › cards #3 “Our values” › title`.
+  - Components and dynamic zone blocks that were added, removed or moved are recorded as such, with the content of the block.
+  - Files are shown by name and related entries by their title.
+  - Publishing records what went live: the differences between the previous live version and the draft that replaced it. Discarding a draft records the edits that were thrown away.
   - Saving without changing anything is still recorded, and marked "no changes".
   - Failed saves are recorded too, with the error.
 - **Media:** uploads, edits and deletes of files and folders.
@@ -29,7 +32,7 @@ Each entry stores:
 - Filters are kept in the URL, so you can bookmark or share a filtered view.
 - Summary tiles: total events, content changes, active users, failed sign-ins.
 - A chart of events per day, plus the most active users and the most edited content types. Click one to filter by it.
-- Click any row to see the full entry: the field-by-field diff, request details and whether the entry has been tampered with.
+- Click any row to see the full entry: the changes grouped by block, with words added and removed highlighted in long text, request details and whether the entry has been tampered with.
 - **Export CSV** downloads whatever the current filters show.
 - **Verify integrity** re-checks the signature on every matching entry and reports any that were changed.
 
@@ -120,10 +123,12 @@ The plugin was built against the OWASP Top 10. The full list of what was done fo
 
 ## Good to know
 
-- Writes are queued and saved in batches about once a second. An editor's save never waits for the log, and never fails because of it.
+- Writes are queued and saved in batches about once a second. An editor's save never waits for the log to be written, and never fails because of it.
+- To work out what a save changed, the plugin reads the entry before and after it, including every nested component. On a page builder with three large layout blocks this added about 50 ms to a save on SQLite (roughly 45% more queries than the save itself). The read-back happens before the save returns, so each entry describes exactly that save even when saves follow each other quickly.
+- One entry keeps up to 200 changes and about 250 KB of values. Past that, the remaining locations are still listed without their values, and the entry says how many changes were left out.
 - If the server is killed hard (not a normal restart), up to a second of entries can be lost. A normal shutdown saves the queue first.
 - Rate limits are counted per server. With 3 servers behind a load balancer, a user can do 3 times the limit.
-- Relation changes show what was connected or disconnected, not the full list before and after.
+- Relation changes show the related entries by title, before and after. If the entries could not be read back, the entry falls back to what was connected or disconnected.
 - Strapi Enterprise has its own audit log. You can run both, but you probably only need one.
 
 ## Development
@@ -135,7 +140,7 @@ npm run pack:local -- --install playground
 cd playground && node scripts/e2e-check.js
 ```
 
-`playground/scripts/e2e-check.js` starts a real Strapi server on a temporary database and runs 56 checks over HTTP: what gets recorded, the diffs, filters, permissions, export, settings and tamper detection.
+`playground/scripts/e2e-check.js` starts a real Strapi server on a temporary database and runs 77 checks over HTTP: what gets recorded, the diffs (including edits deep inside dynamic zones, and what a publish put live), filters, permissions, export, settings and tamper detection.
 
 To check an older Strapi, copy the playground, pin `@strapi/strapi` and `@strapi/plugin-users-permissions` to that version, install the packed plugin and run the same script.
 

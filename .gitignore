@@ -167,3 +167,6 @@ coverage
 
 # Old-Strapi compatibility check app
 .compat-*/
+
+# Strapi admin build cache
+.strapi/

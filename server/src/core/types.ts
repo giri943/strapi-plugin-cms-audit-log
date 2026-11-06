@@ -14,17 +14,30 @@ export interface RequestInfo {
   path?: string;
 }
 
+/** What happened at one place in the document. */
+export type ChangeOp = 'added' | 'removed' | 'changed' | 'moved';
+
 /**
- * One changed field.
+ * One change, at any depth of the document.
  *
- * `kind: 'reference'` marks a relation change, where the before value is not loaded; `after`
- * then summarises what was connected or disconnected instead of holding the full value.
+ * - `field` is a machine path into the document: `title`, `seo.metaTitle`,
+ *   `layouts[1].cards[0].title`. List indexes are zero-based positions in the saved list.
+ * - `path` is the same location for a person: field names, plus `layouts #2 · Hero` for a
+ *   dynamic zone block or `cards #1 “Our values”` for a repeatable component item.
+ * - `kind: 'block'` marks a whole component or dynamic zone block being added, removed or
+ *   moved; its `before`/`after` hold a readable snapshot of the block's content.
+ * - `kind: 'reference'` marks a relation change whose before value could not be loaded; `after`
+ *   then summarises what was connected or disconnected.
  */
 export interface FieldChange {
   field: string;
+  path?: string[];
+  op?: ChangeOp;
   before?: unknown;
   after?: unknown;
-  kind?: 'value' | 'reference' | 'redacted';
+  kind?: 'value' | 'reference' | 'redacted' | 'block';
+  /** Set by the writer when the value was dropped to keep the row within its size budget. */
+  truncated?: boolean;
 }
 
 /** What a capture site hands to the writer. */

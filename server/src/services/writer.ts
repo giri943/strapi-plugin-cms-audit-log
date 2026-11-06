@@ -12,20 +12,43 @@ export type KeySource = 'config' | 'admin-secret' | 'none';
  * Turns an entry into a row: every column bounded to its width, every free-form value
  * redacted, and JSON round-tripped so what is signed is exactly what the database can store.
  */
+/** The field names along a change path: `layouts[2].contact.phone` → layouts, contact, phone. */
+function pathKeys(field: string): string[] {
+  return field.split(/[.[\]]/).filter((part) => part.length > 0 && !/^\d+$/.test(part));
+}
+
 export function toRow(entry: AuditEntry, redactedFields: readonly string[] = []): AuditRow {
   const isSensitive = createSensitiveKeyMatcher(redactedFields);
+  let budget: number = LIMITS.maxChangesBytes;
 
   const changes: FieldChange[] | null =
     entry.changes && entry.changes.length > 0
       ? entry.changes.slice(0, LIMITS.maxChangesPerEntry).map((change) => {
           const out: FieldChange = { field: change.field };
+          if (Array.isArray(change.path) && change.path.length > 0) {
+            out.path = change.path.slice(0, 32).map((segment) => String(segment).slice(0, 200));
+          }
+          if (change.op) out.op = change.op;
           if (change.kind) out.kind = change.kind;
-          if (change.kind === 'redacted' || isSensitive(change.field)) {
+          if (change.kind === 'redacted' || pathKeys(change.field).some(isSensitive)) {
             out.kind = 'redacted';
             return out;
           }
-          if (change.before !== undefined) out.before = redactValue(change.before, isSensitive);
-          if (change.after !== undefined) out.after = redactValue(change.after, isSensitive);
+
+          const before = change.before !== undefined ? redactValue(change.before, isSensitive) : undefined;
+          const after = change.after !== undefined ? redactValue(change.after, isSensitive) : undefined;
+
+          // One huge block (a removed page section with long rich text, say) must not crowd out
+          // the rest of the entry. Past the budget, a change keeps its path and loses its values.
+          const size = Buffer.byteLength(JSON.stringify([before ?? null, after ?? null]), 'utf8');
+          if (size > budget) {
+            out.truncated = true;
+            return out;
+          }
+          budget -= size;
+
+          if (before !== undefined) out.before = before;
+          if (after !== undefined) out.after = after;
           return out;
         })
       : null;

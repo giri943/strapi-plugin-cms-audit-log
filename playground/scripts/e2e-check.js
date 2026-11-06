@@ -179,7 +179,9 @@ async function main() {
 
     const detail = updateDetails.find((entry) => entry?.changes?.some((change) => change.field === 'title'));
     const editedRow = detail ? updates.find((row) => row.id === detail.id) : undefined;
-    const fields = (detail?.changes ?? []).map((change) => change.field).sort();
+    // Changes are reported at their own depth (`seo.metaTitle`, `sections[0]`), so compare the
+    // top-level fields they belong to.
+    const fields = [...new Set((detail?.changes ?? []).map((change) => change.field.split(/[.[]/)[0]))].sort();
     check('diff lists exactly the changed fields', JSON.stringify(fields) === JSON.stringify(['sections', 'seo', 'title', 'views']), JSON.stringify(updateDetails.map((entry) => entry?.changes)));
     check('diff has before and after', detail?.changes?.find((c) => c.field === 'title')?.before === 'First post' && detail?.changes?.find((c) => c.field === 'title')?.after === 'First post (edited)', JSON.stringify(detail?.changes));
     check('signature valid on read', detail?.integrity === 'valid', detail?.integrity);
@@ -190,6 +192,145 @@ async function main() {
     const inviteRow = find('admin-user.create');
     const inviteDetail = inviteRow ? (await http('GET', `/cms-audit-log/logs/${inviteRow.id}`, { token })).text : '';
     check('admin user entry holds no secrets', inviteDetail && !/password|registrationToken"\s*:\s*"[a-f0-9]/i.test(inviteDetail), inviteDetail);
+
+    // --- Nested components inside a dynamic zone -------------------------------------------
+    // Shaped like a page builder: sections (dynamic zone) → card grid → cards (repeatable) →
+    // link (component), with a file and a relation on each card. The checks are about whether
+    // an editor's change deep inside that tree is reported where it happened.
+    const authorsCm = '/content-manager/collection-types/api::author.author';
+    const ann = (await http('POST', authorsCm, { token, body: { name: 'Ann Author', email: 'ann@example.com' } })).json?.data?.documentId;
+    const bob = (await http('POST', authorsCm, { token, body: { name: 'Bob Writer', email: 'bob@example.com' } })).json?.data?.documentId;
+    check('authors for nested relations', ann && bob);
+
+    const nested = await http('POST', cm, {
+      token,
+      body: {
+        title: 'Nested page',
+        sections: [
+          { __component: 'blocks.hero', heading: 'Top hero' },
+          {
+            __component: 'blocks.card-grid',
+            heading: 'Why us',
+            cards: [
+              { title: 'Alpha', body: 'Alpha body text', link: { label: 'More', url: '/alpha' }, author: { connect: [{ documentId: ann }] } },
+              { title: 'Beta', body: 'Beta body', link: { label: 'More', url: '/beta' } },
+            ],
+          },
+          { __component: 'blocks.cta', label: 'Contact', url: '/contact' },
+        ],
+      },
+    });
+    const nestedId = nested.json?.data?.documentId;
+    check('nested create', Boolean(nestedId), nested.text);
+
+    const firstPublish = await http('POST', `${cm}/${nestedId}/actions/publish`, { token, body: {} });
+    check('nested first publish', firstPublish.status === 200, firstPublish.text);
+
+    // Read the draft back the way the edit view does, and send the form back with its ids.
+    const form = (await http('GET', `${cm}/${nestedId}`, { token })).json?.data;
+    const grid = form?.sections?.find((section) => section.__component === 'blocks.card-grid');
+    const cta = form?.sections?.find((section) => section.__component === 'blocks.cta');
+    const alpha = grid?.cards?.find((item) => item.title === 'Alpha');
+    const beta = grid?.cards?.find((item) => item.title === 'Beta');
+    check('edit view returns component ids', grid?.id && alpha?.id && beta?.id && alpha?.link?.id && cta?.id, JSON.stringify(form?.sections).slice(0, 300));
+
+    const nestedEdit = await http('PUT', `${cm}/${nestedId}`, {
+      token,
+      body: {
+        title: 'Nested page',
+        sections: [
+          {
+            __component: 'blocks.card-grid',
+            id: grid?.id,
+            heading: 'Why us',
+            cards: [
+              { id: beta?.id, title: 'Beta', body: 'Beta body', link: { id: beta?.link?.id, label: 'More', url: '/beta-2' } },
+              {
+                id: alpha?.id,
+                title: 'Alpha',
+                body: 'Alpha body text, now a little longer',
+                link: { id: alpha?.link?.id, label: 'More', url: '/alpha' },
+                author: { connect: [{ documentId: bob }], disconnect: [{ documentId: ann }] },
+              },
+              { title: 'Gamma', body: 'Brand new card', link: { label: 'Go', url: '/gamma' } },
+            ],
+          },
+          { __component: 'blocks.cta', id: cta?.id, label: 'Contact us', url: '/contact' },
+        ],
+      },
+    });
+    check('nested update', nestedEdit.status === 200, nestedEdit.text);
+
+    const secondPublish = await http('POST', `${cm}/${nestedId}/actions/publish`, { token, body: {} });
+    check('nested second publish', secondPublish.status === 200, secondPublish.text);
+
+    await http('PUT', `${cm}/${nestedId}`, { token, body: { title: 'Nested page (draft only)' } });
+    const discarded = await http('POST', `${cm}/${nestedId}/actions/discard`, { token, body: {} });
+    check('nested discard draft', discarded.status === 200, discarded.text);
+
+    await flush();
+    const nestedRows = (await logs(token, `?contentType=api::article.article&pageSize=100`))?.results?.filter((row) => row.targetId === nestedId) ?? [];
+    const nestedDetail = async (action, predicate = () => true) => {
+      for (const row of nestedRows.filter((candidate) => candidate.action === action)) {
+        const entry = (await http('GET', `/cms-audit-log/logs/${row.id}`, { token })).json;
+        if (predicate(entry)) return entry;
+      }
+      return undefined;
+    };
+    const byField = (entry) => Object.fromEntries((entry?.changes ?? []).map((change) => [change.field, change]));
+
+    const createEntry = await nestedDetail('entry.create');
+    const createdNested = byField(createEntry);
+    check(
+      'create lists each block with its content',
+      createdNested['sections[0]']?.op === 'added' &&
+        createdNested['sections[1]']?.after?.block === 'Card grid' &&
+        createdNested['sections[1]']?.after?.cards?.[0]?.author === 'Ann Author' &&
+        createdNested['sections[1]']?.after?.cards?.[0]?.link?.url === '/alpha' &&
+        createdNested['sections[2]']?.after?.label === 'Contact',
+      JSON.stringify(createEntry?.changes).slice(0, 600)
+    );
+
+    const firstPublishEntry = await nestedDetail('entry.publish', (entry) => entry?.details?.firstPublish === true);
+    check('first publish says so', Boolean(firstPublishEntry), JSON.stringify(nestedRows.map((row) => row.action)));
+
+    const editEntry = await nestedDetail('entry.update', (entry) => entry?.changes?.some((change) => change.field.includes('cards')));
+    const edit = byField(editEntry);
+    const editSummary = JSON.stringify(editEntry?.changes?.map((change) => [change.field, change.op, change.path?.join(' › ')]));
+    check('removed block reported with its content', edit['sections[0]']?.op === 'removed' && edit['sections[0]']?.before?.heading === 'Top hero', editSummary);
+    check('deep edit reported at its path', edit['sections[0].cards[0].link.url']?.before === '/beta' && edit['sections[0].cards[0].link.url']?.after === '/beta-2', editSummary);
+    check(
+      'deep edit has a readable path',
+      edit['sections[0].cards[0].link.url']?.path?.join(' › ') === 'sections #1 · Card grid “Why us” › cards #1 “Beta” › link › url',
+      editSummary
+    );
+    check('nested relation shown by name', edit['sections[0].cards[1].author']?.before === 'Ann Author' && edit['sections[0].cards[1].author']?.after === 'Bob Writer', editSummary);
+    check('nested rich text change reported', edit['sections[0].cards[1].body']?.after === 'Alpha body text, now a little longer', editSummary);
+    check('new card reported as added', edit['sections[0].cards[2]']?.op === 'added' && edit['sections[0].cards[2]']?.after?.title === 'Gamma', editSummary);
+    check('reordered card reported as moved', (editEntry?.changes ?? []).filter((change) => change.op === 'moved').length === 1, editSummary);
+    check('block field edit reported', edit['sections[1].label']?.before === 'Contact' && edit['sections[1].label']?.after === 'Contact us', editSummary);
+    check(
+      'untouched fields not reported',
+      !edit.title && !edit['sections[0].heading'] && !edit['sections[0].cards[0].title'] && !edit['sections[0].cards[1].link.url'],
+      editSummary
+    );
+
+    const publishEntry = await nestedDetail('entry.publish', (entry) => !entry?.details?.firstPublish);
+    const wentLive = byField(publishEntry);
+    check(
+      'publish lists what went live',
+      wentLive['sections[1].label']?.after === 'Contact us' && wentLive['sections[0].cards[0].link.url']?.after === '/beta-2' && wentLive['sections[0]']?.op === 'removed',
+      JSON.stringify(publishEntry?.changes?.map((change) => [change.field, change.op]))
+    );
+
+    const discardEntry = await nestedDetail('entry.discard-draft');
+    const discardedChanges = byField(discardEntry);
+    check(
+      'discard lists what was thrown away',
+      discardedChanges.title?.before === 'Nested page (draft only)' && discardedChanges.title?.after === 'Nested page' && Object.keys(discardedChanges).length === 1,
+      JSON.stringify(discardEntry?.changes)
+    );
+    check('nested entries signed', [createEntry, editEntry, publishEntry, discardEntry].every((entry) => entry?.integrity === 'valid'));
 
     // --- Filters ---------------------------------------------------------------------------
     const byActor = await logs(token, `?actor=${editedRow?.actorId}&actorType=admin&category=content&pageSize=100`);

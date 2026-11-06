@@ -75,7 +75,7 @@
     },
     "sections": {
       "type": "dynamiczone",
-      "components": ["blocks.hero", "blocks.cta"]
+      "components": ["blocks.hero", "blocks.cta", "blocks.card-grid"]
     },
     "author": {
       "type": "relation",

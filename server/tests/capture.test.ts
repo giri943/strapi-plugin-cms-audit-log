@@ -5,7 +5,9 @@ import type { AuditEntry } from '../src/core/types';
 
 const ARTICLE = 'api::article.article';
 
-function fakeStrapi(options: { settings?: Partial<PluginSettings>; stored?: Record<string, unknown>; writerThrows?: boolean; ctx?: unknown } = {}) {
+type Stored = Record<string, unknown> | ((params: Record<string, unknown>) => Record<string, unknown> | null);
+
+function fakeStrapi(options: { settings?: Partial<PluginSettings>; stored?: Stored; writerThrows?: boolean; ctx?: unknown } = {}) {
   const queued: AuditEntry[] = [];
   const settings = { ...DEFAULT_SETTINGS, ...options.settings };
   const model = {
@@ -29,7 +31,10 @@ function fakeStrapi(options: { settings?: Partial<PluginSettings>; stored?: Reco
         },
     },
     getModel: () => model,
-    documents: () => ({ findOne: async () => options.stored ?? null }),
+    documents: () => ({
+      findOne: async (params: Record<string, unknown>) =>
+        typeof options.stored === 'function' ? options.stored(params) : (options.stored ?? null),
+    }),
     plugin: () => ({
       service: (name: string) => {
         if (name === 'settings') return { get: async () => settings };
@@ -115,6 +120,7 @@ describe('document capture', () => {
     await contentApi.capture.handleDocument(context('create', { data: { title: 'A' } }), next);
     expect(contentApi.queued).toHaveLength(0);
 
+    expect([reads, excluded, contentApi].every((fake) => fake.queued.length === 0)).toBe(true);
     expect(next).toHaveBeenCalledTimes(3);
   });
 
@@ -128,6 +134,49 @@ describe('document capture', () => {
     on.strapi.requestContext.get = () => undefined;
     await on.capture.handleDocument(context('create', { data: { title: 'A' } }), async () => ({ documentId: 'd' }));
     expect(on.queued[0]?.actor).toEqual({ type: 'system' });
+  });
+
+  it('reads the result back before answering, so a later save cannot leak into this entry', async () => {
+    // The stored row changes again right after this save returns, as it would when an editor
+    // saves twice in quick succession. The entry must describe this save only.
+    let stored: Record<string, unknown> = { title: 'Old' };
+    const { capture, queued } = fakeStrapi({ stored: () => stored });
+
+    await capture.handleDocument(context('update', { documentId: 'doc1', data: { title: 'New' } }), async () => {
+      stored = { title: 'New' };
+      return { documentId: 'doc1', title: 'New' };
+    });
+    stored = { title: 'Newer, from the next save' };
+
+    expect(queued).toHaveLength(1);
+    expect(queued[0]?.changes).toEqual([
+      expect.objectContaining({ field: 'title', before: 'Old', after: 'New' }),
+    ]);
+  });
+
+  it('records what a publish put live: the old live version against the draft', async () => {
+    const { capture, queued } = fakeStrapi({
+      stored: (params) => (params.status === 'published' ? { title: 'Live title', views: 1 } : { title: 'Draft title', views: 1 }),
+    });
+
+    await capture.handleDocument(context('publish', { documentId: 'doc1' }), async () => ({ entries: [{ documentId: 'doc1' }] }));
+
+    expect(queued[0]).toMatchObject({
+      action: 'entry.publish',
+      targetLabel: 'Draft title',
+      changes: [{ field: 'title', op: 'changed', before: 'Live title', after: 'Draft title' }],
+    });
+  });
+
+  it('marks a first publish rather than listing the whole entry', async () => {
+    const { capture, queued } = fakeStrapi({
+      stored: (params) => (params.status === 'published' ? null : { title: 'Draft title' }),
+    });
+
+    await capture.handleDocument(context('publish', { documentId: 'doc1' }), async () => ({ entries: [] }));
+
+    expect(queued[0]?.details).toMatchObject({ firstPublish: true });
+    expect(queued[0]?.changes).toBeUndefined();
   });
 });
 

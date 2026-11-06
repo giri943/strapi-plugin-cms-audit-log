@@ -96,7 +96,9 @@ export const REDACTED = '[REDACTED]' as const;
 /** Upper bounds that keep one log row, and the request that writes it, small. */
 export const LIMITS = {
   maxValueChars: 2_000,
-  maxChangesPerEntry: 100,
+  maxChangesPerEntry: 200,
+  /** Serialised size of one row's changes; values past it are dropped, the paths kept. */
+  maxChangesBytes: 256_000,
   maxDetailsBytes: 32_000,
   maxUserAgentChars: 512,
   maxPathChars: 512,

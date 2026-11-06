@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { resolveActor, requestInfo } from '../src/core/actor';
 import { escapeFormula, rowToCsvRecord, CSV_COLUMNS } from '../src/core/csv';
-import { diffDocument, summariseRelationWrite } from '../src/core/diff';
+import {
+  blocksToText,
+  buildPopulate,
+  diffDocument,
+  diffDocumentDetailed,
+  summariseRelationWrite,
+  type SchemaInfo,
+} from '../src/core/diff';
 import { mapEvent } from '../src/core/events';
 import { parseFilters, parsePagination, parseTzOffset, toWhere } from '../src/core/filters';
 import { entryLabel } from '../src/core/labels';
@@ -65,7 +72,9 @@ describe('diffDocument', () => {
       isSensitive: sensitive,
     });
 
-    expect(changes).toEqual([{ field: 'title', kind: 'value', before: 'Old', after: 'New' }]);
+    expect(changes).toEqual([
+      { field: 'title', path: ['title'], op: 'changed', kind: 'value', before: 'Old', after: 'New' },
+    ]);
   });
 
   it('never stores password values', () => {
@@ -77,7 +86,7 @@ describe('diffDocument', () => {
       attributes,
       isSensitive: sensitive,
     });
-    expect(changes).toEqual([{ field: 'secret', kind: 'redacted' }]);
+    expect(changes).toEqual([{ field: 'secret', path: ['secret'], op: 'changed', kind: 'redacted' }]);
     expect(JSON.stringify(changes)).not.toContain('hunter2');
   });
 
@@ -104,7 +113,7 @@ describe('diffDocument', () => {
     });
 
     expect(changes[0]).toMatchObject({ field: 'author', kind: 'reference', after: { connect: ['abc'], connectCount: 1 } });
-    expect(changes[1]).toMatchObject({ field: 'cover', before: 3, after: 7 });
+    expect(changes[1]).toMatchObject({ field: 'cover', op: 'changed', before: 'File #3', after: 'File #7' });
   });
 
   it('records initial values on create, skipping empty ones', () => {
@@ -116,12 +125,273 @@ describe('diffDocument', () => {
       attributes,
       isSensitive: sensitive,
     });
-    expect(changes).toEqual([{ field: 'title', kind: 'value', before: null, after: 'First' }]);
+    expect(changes).toEqual([
+      { field: 'title', path: ['title'], op: 'added', kind: 'value', before: null, after: 'First' },
+    ]);
   });
 
   it('summarises bare relation arrays', () => {
     expect(summariseRelationWrite(['a', 'b'])).toEqual({ set: ['a', 'b'], count: 2 });
     expect(summariseRelationWrite(undefined)).toBeNull();
+  });
+});
+
+describe('diffDocument on nested components and dynamic zones', () => {
+  // Shaped like a page builder: Page.layouts (dynamic zone) → home layout → section → cards
+  // (repeatable) → link (component), with files and relations at the bottom.
+  const components: Record<string, SchemaInfo> = {
+    'shared.link': { displayName: 'Link', attributes: { label: { type: 'string' }, url: { type: 'string' } } },
+    'home.card': {
+      displayName: 'Card',
+      attributes: {
+        title: { type: 'string' },
+        image: { type: 'media' },
+        link: { type: 'component', component: 'shared.link' },
+        author: { type: 'relation', relation: 'oneToOne', target: 'api::author.author' },
+        apiToken: { type: 'string' },
+      },
+    },
+    'home.section': {
+      displayName: 'Section',
+      attributes: {
+        heading: { type: 'string' },
+        cards: { type: 'component', component: 'home.card', repeatable: true },
+      },
+    },
+    'layouts.home-layout': {
+      displayName: 'Home layout',
+      attributes: { section_four: { type: 'component', component: 'home.section' } },
+    },
+    'layouts.cta': { displayName: 'CTA', attributes: { label: { type: 'string' } } },
+  };
+  const attributes = {
+    title: { type: 'string' },
+    layouts: { type: 'dynamiczone', components: ['layouts.home-layout', 'layouts.cta'] },
+  };
+  const getComponent = (uid: string) => components[uid];
+
+  const card = (id: number, title: string, extra: Record<string, unknown> = {}) => ({
+    id,
+    title,
+    image: { id: 10 + id, name: `card-${id}.png` },
+    link: { id: 100 + id, label: 'More', url: `/c/${id}` },
+    author: { documentId: 'auth1', name: 'Ann' },
+    ...extra,
+  });
+  const home = (cards: unknown[]) => ({
+    __component: 'layouts.home-layout',
+    id: 1,
+    section_four: { id: 5, heading: 'Why us', cards },
+  });
+  const cta = (id: number, label: string) => ({ __component: 'layouts.cta', id, label });
+
+  const run = (before: unknown, after: unknown, mode: 'update' | 'create' | 'compare' = 'update') =>
+    diffDocument({
+      mode,
+      data: mode === 'compare' ? undefined : { layouts: after },
+      before: { layouts: before },
+      after: { layouts: after },
+      attributes,
+      isSensitive: sensitive,
+      getComponent,
+    });
+
+  it('reports an edit deep inside a block at its own path, and nothing else', () => {
+    const before = [home([card(1, 'Alpha'), card(2, 'Beta')]), cta(1, 'Go')];
+    const after = [home([card(1, 'Alpha'), card(2, 'Beta', { link: { id: 102, label: 'More', url: '/new' } })]), cta(1, 'Go')];
+
+    expect(run(before, after)).toEqual([
+      {
+        field: 'layouts[0].section_four.cards[1].link.url',
+        path: ['layouts #1 · Home layout', 'section_four', 'cards #2 “Beta”', 'link', 'url'],
+        op: 'changed',
+        kind: 'value',
+        before: '/c/2',
+        after: '/new',
+      },
+    ]);
+  });
+
+  it('matches items by id, so adding one card does not show every later card as changed', () => {
+    const before = [home([card(1, 'Alpha'), card(2, 'Beta')])];
+    const after = [home([card(3, 'New card'), card(1, 'Alpha'), card(2, 'Beta')])];
+
+    const changes = run(before, after);
+    expect(changes).toHaveLength(1);
+    expect(changes[0]).toMatchObject({
+      field: 'layouts[0].section_four.cards[0]',
+      op: 'added',
+      kind: 'block',
+      before: null,
+      after: {
+        title: 'New card',
+        image: 'card-3.png',
+        link: { label: 'More', url: '/c/3' },
+        author: 'Ann',
+      },
+    });
+  });
+
+  it('reports removed and moved blocks, with what the removed block contained', () => {
+    const before = [home([card(1, 'Alpha')]), cta(1, 'Go'), cta(2, 'Stop')];
+    const after = [cta(2, 'Stop'), home([card(1, 'Alpha')])];
+
+    const changes = run(before, after);
+    const byOp = (op: string) => changes.filter((change) => change.op === op);
+
+    expect(byOp('removed')).toEqual([
+      expect.objectContaining({
+        field: 'layouts[1]',
+        path: ['layouts #2 · CTA “Go”'],
+        before: { block: 'CTA', label: 'Go' },
+        after: null,
+      }),
+    ]);
+    expect(byOp('moved')).toHaveLength(1);
+    expect(byOp('moved')[0]).toMatchObject({ path: ['layouts #1 · CTA “Stop”'], before: 'Position 3', after: 'Position 1' });
+    expect(byOp('changed')).toHaveLength(0);
+  });
+
+  it('treats the same id in two different block types as two different blocks', () => {
+    const changes = run([cta(1, 'Go')], [{ __component: 'layouts.home-layout', id: 1, section_four: null }]);
+    expect(changes.map((change) => change.op).sort()).toEqual(['added', 'removed']);
+  });
+
+  it('shows files by name and related entries by title, and redacts sensitive keys at any depth', () => {
+    const before = [home([card(1, 'Alpha', { apiToken: 'old-secret' })])];
+    const after = [
+      home([
+        card(1, 'Alpha', {
+          image: { id: 99, name: 'swapped.png' },
+          author: { documentId: 'auth2', name: 'Bob' },
+          apiToken: 'new-secret',
+        }),
+      ]),
+    ];
+
+    const changes = run(before, after);
+    const at = (suffix: string) => changes.find((change) => change.field.endsWith(suffix));
+
+    expect(at('.image')).toMatchObject({ before: 'card-1.png', after: 'swapped.png' });
+    expect(at('.author')).toMatchObject({ before: 'Ann', after: 'Bob' });
+    expect(at('.apiToken')).toMatchObject({ kind: 'redacted' });
+    expect(JSON.stringify(changes)).not.toContain('secret');
+  });
+
+  it('on create, lists each block with its content instead of one opaque value', () => {
+    const changes = run(null, [home([card(1, 'Alpha')]), cta(1, 'Go')], 'create');
+
+    expect(changes.map((change) => [change.path?.join(' › '), change.op])).toEqual([
+      ['layouts #1 · Home layout', 'added'],
+      ['layouts #2 · CTA “Go”', 'added'],
+    ]);
+    expect(changes[0].after).toMatchObject({
+      block: 'Home layout',
+      section_four: { heading: 'Why us', cards: [{ title: 'Alpha', link: { url: '/c/1' } }] },
+    });
+  });
+
+  it('compares every field of two versions in compare mode (publish)', () => {
+    const changes = diffDocument({
+      mode: 'compare',
+      before: { title: 'Live', layouts: [cta(1, 'Go')], updatedAt: 'a' },
+      after: { title: 'Draft', layouts: [cta(1, 'Go now')], updatedAt: 'b' },
+      attributes,
+      isSensitive: sensitive,
+      getComponent,
+    });
+
+    expect(changes.map((change) => change.field)).toEqual(['title', 'layouts[0].label']);
+  });
+
+  it('matches blocks by content in compare mode, because publishing gives every component a new id', () => {
+    // Same page, as the live version (ids 1..) and the draft (ids 50..): Beta's link was edited,
+    // the cards were swapped, a CTA's only field changed, and a new CTA was added at the end.
+    const live = [
+      { ...home([card(1, 'Alpha'), card(2, 'Beta')]), id: 1 },
+      cta(1, 'Go'),
+    ];
+    const draft = [
+      {
+        ...home([card(52, 'Beta', { link: { id: 152, label: 'More', url: '/new' } }), card(51, 'Alpha')]),
+        id: 50,
+        section_four: {
+          id: 55,
+          heading: 'Why us',
+          cards: [
+            card(52, 'Beta', { image: { id: 12, name: 'card-2.png' }, link: { id: 152, label: 'More', url: '/new' } }),
+            card(51, 'Alpha', { image: { id: 11, name: 'card-1.png' }, link: { id: 151, label: 'More', url: '/c/1' } }),
+          ],
+        },
+      },
+      cta(50, 'Go now'),
+      cta(51, 'Brand new'),
+    ];
+
+    const changes = diffDocument({
+      mode: 'compare',
+      before: { layouts: live },
+      after: { layouts: draft },
+      attributes,
+      isSensitive: sensitive,
+      getComponent,
+    });
+
+    expect(changes.map((change) => [change.field, change.op])).toEqual([
+      ['layouts[0].section_four.cards[0]', 'moved'],
+      ['layouts[0].section_four.cards[0].link.url', 'changed'],
+      ['layouts[1].label', 'changed'],
+      ['layouts[2]', 'added'],
+    ]);
+  });
+
+  it('caps the number of changes and counts what it left out', () => {
+    const many = Array.from({ length: 30 }, (_, i) => card(i + 1, `Card ${i}`));
+    const renamed = many.map((item) => ({ ...item, title: `${item.title}!` }));
+
+    const result = diffDocumentDetailed({
+      mode: 'update',
+      data: { layouts: [] },
+      before: { layouts: [home(many)] },
+      after: { layouts: [home(renamed)] },
+      attributes,
+      isSensitive: sensitive,
+      getComponent,
+      maxChanges: 10,
+    });
+
+    expect(result.changes).toHaveLength(10);
+    expect(result.omitted).toBe(20);
+  });
+
+  it('builds a populate tree that reaches the bottom of every block', () => {
+    const models = {
+      component: getComponent,
+      contentType: () => ({ attributes: { name: { type: 'string' } } }),
+    };
+    const populate = buildPopulate(attributes, models) as any;
+    const card = populate.layouts.on['layouts.home-layout'].populate.section_four.populate.cards.populate;
+
+    expect(card.image).toEqual({ fields: ['name'] });
+    expect(card.author).toEqual({ fields: ['documentId', 'name'] });
+    expect(card.link).toBe(true);
+    expect(populate.layouts.on['layouts.cta']).toBe(true);
+    expect(populate.title).toBeUndefined();
+
+    // The same tree for strapi.db.query(), which takes `select` and needs the id selected.
+    const forQuery = buildPopulate(attributes, models, undefined, 0, 'query') as any;
+    const queryCard = forQuery.layouts.on['layouts.home-layout'].populate.section_four.populate.cards.populate;
+    expect(queryCard.image).toEqual({ select: ['id', 'name'] });
+    expect(queryCard.author).toEqual({ select: ['id', 'documentId', 'name'] });
+  });
+
+  it('turns Strapi blocks rich text into readable text', () => {
+    expect(
+      blocksToText([
+        { type: 'paragraph', children: [{ type: 'text', text: 'Hello ' }, { type: 'text', text: 'world', bold: true }] },
+        { type: 'list', children: [{ type: 'list-item', children: [{ type: 'text', text: 'one' }] }] },
+      ])
+    ).toBe('Hello world\n• one');
   });
 });
 
@@ -368,5 +638,40 @@ describe('toRow', () => {
     );
     expect(row.actorEmail).toHaveLength(255);
     expect(row.changes).toEqual([{ field: 'nationalId', kind: 'redacted' }]);
+  });
+
+  const entry = (changes: AuditRow['changes']) => ({
+    action: 'entry.update',
+    category: 'content' as const,
+    outcome: 'success' as const,
+    actor: { type: 'admin' as const, id: '1' },
+    changes: changes ?? undefined,
+    occurredAt: new Date(),
+  });
+
+  it('redacts a configured field wherever it sits in a nested path', () => {
+    const row = toRow(
+      entry([{ field: 'layouts[2].contact.nationalId', path: ['layouts #3', 'contact', 'nationalId'], op: 'changed', before: '1', after: '2' }]),
+      ['nationalId']
+    );
+    expect(row.changes).toEqual([
+      { field: 'layouts[2].contact.nationalId', path: ['layouts #3', 'contact', 'nationalId'], op: 'changed', kind: 'redacted' },
+    ]);
+  });
+
+  it('keeps every change path but drops values past the size budget', () => {
+    const big = 'x'.repeat(1_900);
+    const changes = Array.from({ length: 150 }, (_, i) => ({
+      field: `layouts[${i}]`,
+      op: 'added' as const,
+      kind: 'block' as const,
+      after: { a: big, b: big },
+    }));
+
+    const row = toRow(entry(changes));
+    expect(row.changes).toHaveLength(150);
+    expect(row.changes?.[0].after).toBeDefined();
+    expect(row.changes?.[149]).toEqual({ field: 'layouts[149]', op: 'added', kind: 'block', truncated: true });
+    expect(JSON.stringify(row.changes).length).toBeLessThan(300_000);
   });
 });

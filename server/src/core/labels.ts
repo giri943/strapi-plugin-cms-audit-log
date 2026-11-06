@@ -2,7 +2,17 @@ import { LIMITS } from '../constants';
 import { columnString } from './redact';
 
 /** Fields tried, in order, for a human-readable name of an entry. */
-const LABEL_FIELDS = ['title', 'name', 'displayName', 'label', 'heading', 'slug', 'username', 'email', 'code'];
+export const LABEL_FIELDS: readonly string[] = [
+  'title',
+  'name',
+  'displayName',
+  'label',
+  'heading',
+  'slug',
+  'username',
+  'email',
+  'code',
+];
 
 /**
  * Picks something an auditor can recognise an entry by.

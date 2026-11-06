@@ -9,11 +9,17 @@ export type Outcome = 'success' | 'failure';
 export type ActorType = 'admin' | 'api-token' | 'end-user' | 'system' | 'anonymous';
 export type Integrity = 'valid' | 'invalid' | 'unsigned' | 'unverifiable';
 
+export type ChangeOp = 'added' | 'removed' | 'changed' | 'moved';
+
+/** See `FieldChange` in server/src/core/types.ts. Rows written by 0.1.0-beta.0 have no `path` or `op`. */
 export interface FieldChange {
   field: string;
+  path?: string[];
+  op?: ChangeOp;
   before?: unknown;
   after?: unknown;
-  kind?: 'value' | 'reference' | 'redacted';
+  kind?: 'value' | 'reference' | 'redacted' | 'block';
+  truncated?: boolean;
 }
 
 export interface LogListItem {
