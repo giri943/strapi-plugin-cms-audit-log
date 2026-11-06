@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.0
+
+First stable release. It includes everything from the 0.1.0 betas below, and was tested end to end on Strapi 5.0, 5.42 and 5.61.
+
 ## 0.1.0-beta.4
 
 - Clicking Publish after saving no longer adds an "Updated · Saved with no changes" entry. The Content Manager's Publish button saves the form again inside the same request; when that save changes nothing, the publish entry beside it already says what went live. When it does change something (edit, then Publish without saving), it is kept and marked "saved as part of clicking Publish".
