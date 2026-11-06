@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0-beta.2
+
+- Admin user updates show each changed field before and after: name, email, username, active, blocked, interface language, and roles by name ("Roles: Editor → Author"). A password change is shown as changed, never with a value. Before, the entry showed the user as JSON after the change, with role ids.
+- Role renames show the old and new name and description.
+- Saving a role's permissions is recorded as one entry listing what was granted, revoked and narrowed, grouped like the Roles screen ("Content › Pages › Delete", "Plugins › Upload › Access the Media Library"). Unticking one field lists that field, not the whole list. Before, each save left several "Granted/Removed permissions" entries with a count and raw action ids.
+- Invited and deleted admin users are shown as fields, with roles by name.
+- Password-reset and registration token writes no longer create "Updated admin user" entries.
+
 ## 0.1.0-beta.1
 
 - Changes inside components and dynamic zones are recorded at the field that changed, at any depth, with a readable location (`layouts #2 · Home layout › section four › cards #3 › title`). Before, a whole dynamic zone was stored as one value, nested sections were not loaded at all, and anything more than six levels down was cut to `[nested]`.

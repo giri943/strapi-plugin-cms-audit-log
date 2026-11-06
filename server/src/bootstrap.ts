@@ -6,6 +6,7 @@ import type { PluginSettings } from './services/settings';
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let unsubscribe: (() => void) | null = null;
+let unsubscribeLifecycles: (() => void) | null = null;
 let pruneTimer: NodeJS.Timeout | null = null;
 
 const bootstrap = async ({ strapi }: { strapi: Core.Strapi }) => {
@@ -24,6 +25,15 @@ const bootstrap = async ({ strapi }: { strapi: Core.Strapi }) => {
   unsubscribe = strapi.eventHub.subscribe((name: string, ...args: unknown[]) =>
     plugin.service('capture').handleEvent(name, args[0])
   ) as unknown as () => void;
+
+  // Admin users and roles are read before and after each update, for a before/after diff.
+  try {
+    const lifecycles = strapi.db.lifecycles as unknown as { subscribe(subscriber: unknown): unknown };
+    const result = lifecycles.subscribe(plugin.service('capture').adminLifecycles());
+    unsubscribeLifecycles = typeof result === 'function' ? (result as () => void) : null;
+  } catch (error) {
+    strapi.log.error(`[${PLUGIN_NAME}] Could not watch admin user and role updates; they are logged without a diff.`, error);
+  }
 
   /**
    * Retention runs on a plain timer rather than `strapi.cron`, because cron jobs only run when
@@ -58,6 +68,8 @@ export const stopBackgroundWork = () => {
   pruneTimer = null;
   unsubscribe?.();
   unsubscribe = null;
+  unsubscribeLifecycles?.();
+  unsubscribeLifecycles = null;
 };
 
 export default bootstrap;

@@ -196,7 +196,103 @@ describe('event capture', () => {
     const { capture, queued } = fakeStrapi();
     await capture.handleEvent('user.create', { user: { id: 2, email: 'new@example.com' } });
     expect(queued[0]?.actor).toMatchObject({ type: 'admin', id: '7' });
-    expect(queued[0]?.details).not.toHaveProperty('selfService');
+    expect(queued[0]?.details?.selfService).toBeUndefined();
+  });
+
+  it('lists an invited user as fields, with roles by name', async () => {
+    const { capture, queued } = fakeStrapi();
+    await capture.handleEvent('user.create', {
+      user: { id: 2, email: 'new@example.com', firstname: 'New', roles: [{ id: 3, name: 'Editor' }] },
+    });
+    expect(queued[0]?.changes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'email', op: 'added', after: 'new@example.com' }),
+        expect.objectContaining({ field: 'roles', op: 'added', after: ['Editor'] }),
+      ])
+    );
+  });
+});
+
+describe('admin user and role updates', () => {
+  /** A fake query engine over one admin user, one role and its permissions. */
+  function withAdminData(fake: ReturnType<typeof fakeStrapi>) {
+    const rows: Record<string, any> = {
+      user: { id: 5, firstname: 'Maziya', lastname: 'Shaikh', email: 'maziya@example.com', isActive: true, blocked: false, roles: [{ id: 3, name: 'Editor' }] },
+      role: { id: 4, name: 'Editor', description: '' },
+      permissions: [{ action: 'plugin::content-manager.explorer.read', subject: 'api::page.page', properties: { fields: ['title'] }, conditions: [] }],
+    };
+    fake.strapi.db = {
+      query: (uid: string) => ({
+        findOne: async () => (uid === 'admin::user' ? structuredClone(rows.user) : structuredClone(rows.role)),
+        findMany: async () => structuredClone(rows.permissions),
+      }),
+    };
+    fake.strapi.service = () => ({ actionProvider: { get: () => ({ displayName: 'Read' }) }, conditionProvider: { get: () => undefined } });
+    fake.strapi.getModel = (uid: string) =>
+      uid === 'api::page.page' ? { info: { displayName: 'Pages' } } : { info: { displayName: 'Article' }, attributes: {} };
+    return rows;
+  }
+
+  const lifecycle = async (fake: ReturnType<typeof fakeStrapi>, uid: string, data: Record<string, unknown>, write: () => void) => {
+    const subscriber = fake.capture.adminLifecycles();
+    const event = { model: { uid }, params: { where: { id: 5 }, data }, state: {} as Record<string, unknown> };
+    await subscriber.beforeUpdate(event);
+    write();
+    await subscriber.afterUpdate(event);
+  };
+
+  it('records a role change on an admin user as before and after, and skips the event hub copy', async () => {
+    const fake = fakeStrapi();
+    const rows = withAdminData(fake);
+
+    await lifecycle(fake, 'admin::user', { roles: [4] }, () => {
+      rows.user.roles = [{ id: 4, name: 'Author' }];
+    });
+    await fake.capture.handleEvent('user.update', { user: { id: 5, email: 'maziya@example.com', roles: [4] } });
+
+    expect(fake.queued).toHaveLength(1);
+    expect(fake.queued[0]).toMatchObject({
+      action: 'admin-user.update',
+      targetLabel: 'maziya@example.com',
+      actor: { type: 'admin', id: '7' },
+      changes: [{ field: 'roles', path: ['Roles'], before: ['Editor'], after: ['Author'] }],
+    });
+  });
+
+  it('ignores token bookkeeping writes and their events', async () => {
+    const fake = fakeStrapi();
+    withAdminData(fake);
+
+    await lifecycle(fake, 'admin::user', { resetPasswordToken: 'abc' }, () => undefined);
+    await fake.capture.handleEvent('user.update', { user: { id: 5, email: 'maziya@example.com' } });
+
+    expect(fake.queued).toHaveLength(0);
+  });
+
+  it('turns a role permission save into one entry and drops the per-permission events', async () => {
+    const fake = fakeStrapi();
+    const rows = withAdminData(fake);
+    const ctx: any = {
+      method: 'PUT',
+      path: '/admin/roles/4/permissions',
+      status: 200,
+      state: { auth: { strategy: { name: 'admin' } }, user: { id: 7, email: 'ann@example.com', firstname: 'Ann' } },
+      request: { ip: '1.2.3.4' },
+      get: () => 'UA',
+    };
+    fake.strapi.requestContext.get = () => ctx;
+
+    await fake.capture.permissionsMiddleware()(ctx, async () => {
+      rows.permissions = [];
+      await fake.capture.handleEvent('permission.delete', { permissions: [{ action: 'plugin::content-manager.explorer.read' }] });
+    });
+
+    expect(fake.queued).toHaveLength(1);
+    expect(fake.queued[0]).toMatchObject({
+      action: 'role.permissions.update',
+      targetLabel: 'Editor',
+      changes: [{ path: ['Content › Pages', 'Read'], op: 'removed', before: { Fields: ['title'] } }],
+    });
   });
 });
 

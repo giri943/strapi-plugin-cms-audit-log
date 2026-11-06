@@ -193,6 +193,89 @@ async function main() {
     const inviteDetail = inviteRow ? (await http('GET', `/cms-audit-log/logs/${inviteRow.id}`, { token })).text : '';
     check('admin user entry holds no secrets', inviteDetail && !/password|registrationToken"\s*:\s*"[a-f0-9]/i.test(inviteDetail), inviteDetail);
 
+    // --- Admin users, roles and permissions: before and after -------------------------------
+    const allRoles = (await http('GET', '/admin/roles', { token })).json?.data ?? [];
+    const authorRole = allRoles.find((role) => role.code === 'strapi-author');
+    const editorId = invited.json?.data?.id;
+
+    const userEdit = await http('PUT', `/admin/users/${editorId}`, { token, body: { firstname: 'Edward', roles: [authorRole?.id] } });
+    check('admin user role change accepted', userEdit.status === 200, userEdit.text);
+
+    const roleRename = await http('PUT', `/admin/roles/${authorRole?.id}`, {
+      token,
+      body: { name: 'Author (renamed)', description: authorRole?.description ?? '' },
+    });
+    check('role rename accepted', roleRename.status === 200, roleRename.text);
+
+    await flush();
+    const permissionRowsBefore = (await logs(token, '?category=role&pageSize=100'))?.results?.filter((row) => row.action.startsWith('permission.')).length ?? 0;
+
+    // What the Roles screen does: read the role's permissions, change some, send them all back.
+    const currentPermissions = (await http('GET', `/admin/roles/${authorRole?.id}/permissions`, { token })).json?.data ?? [];
+    const articlePerms = currentPermissions.filter((permission) => permission.subject === 'api::article.article');
+    const narrowed = articlePerms.find((permission) => Array.isArray(permission.properties?.fields) && permission.properties.fields.includes('body'));
+    const dropped = articlePerms.find((permission) => permission !== narrowed);
+    const nextPermissions = currentPermissions
+      .filter((permission) => permission !== dropped)
+      .map((permission) => ({
+        action: permission.action,
+        subject: permission.subject,
+        conditions: permission.conditions,
+        properties:
+          permission === narrowed
+            ? { ...permission.properties, fields: permission.properties.fields.filter((field) => field !== 'body') }
+            : permission.properties,
+      }));
+    const permissionsSave = await http('PUT', `/admin/roles/${authorRole?.id}/permissions`, { token, body: { permissions: nextPermissions } });
+    check('role permission save accepted', permissionsSave.status === 200 && narrowed && dropped, `${permissionsSave.status} ${permissionsSave.text.slice(0, 200)}`);
+
+    await flush();
+    const roleRows = (await logs(token, '?category=admin-user,role&pageSize=100'))?.results ?? [];
+    const detailOf = async (row) => (row ? (await http('GET', `/cms-audit-log/logs/${row.id}`, { token })).json : undefined);
+
+    const userUpdate = await detailOf(roleRows.find((row) => row.action === 'admin-user.update' && row.targetId === String(editorId)));
+    const userChanges = Object.fromEntries((userUpdate?.changes ?? []).map((change) => [change.field, change]));
+    check(
+      'admin user update shows roles before and after by name',
+      JSON.stringify(userChanges.roles?.before) === JSON.stringify(['Editor']) && JSON.stringify(userChanges.roles?.after) === JSON.stringify(['Author']),
+      JSON.stringify(userUpdate?.changes)
+    );
+    check('admin user update shows the name change', userChanges.firstname?.before === 'Ed' && userChanges.firstname?.after === 'Edward', JSON.stringify(userUpdate?.changes));
+    // Two updates of this user: accepting the invite (by the user, password hidden) and the role
+    // change (by Ada). Neither may be the event hub's after-only copy, which has no changes.
+    const editorUpdates = [];
+    for (const row of roleRows.filter((candidate) => candidate.action === 'admin-user.update' && candidate.targetId === String(editorId))) editorUpdates.push(await detailOf(row));
+    const acceptInvite = editorUpdates.find((entry) => entry?.details?.selfService);
+    check(
+      'invite acceptance attributed to the user, password hidden',
+      acceptInvite?.actorEmail === 'ed@example.com' && acceptInvite.changes?.some((change) => change.field === 'password' && change.kind === 'redacted' && change.before === undefined),
+      JSON.stringify(editorUpdates.map((entry) => [entry?.actorEmail, entry?.details, entry?.changes]))
+    );
+    check(
+      'no after-only duplicate of admin user updates',
+      editorUpdates.length === 2 && editorUpdates.every((entry) => Array.isArray(entry?.changes) && entry.changes.length > 0),
+      JSON.stringify(editorUpdates.map((entry) => [entry?.actorEmail, entry?.changes?.length, entry?.details]))
+    );
+
+    const roleUpdate = await detailOf(roleRows.find((row) => row.action === 'role.update' && row.targetId === String(authorRole?.id)));
+    check('role rename shows before and after', roleUpdate?.changes?.[0]?.before === 'Author' && roleUpdate?.changes?.[0]?.after === 'Author (renamed)', JSON.stringify(roleUpdate?.changes));
+
+    const permissionEntry = await detailOf(roleRows.find((row) => row.action === 'role.permissions.update'));
+    const permissionSummary = JSON.stringify(permissionEntry?.changes?.map((change) => [change.path?.join(' › '), change.op, change.before, change.after]));
+    check('permission save recorded as one entry for the role', permissionEntry?.targetLabel === 'Author (renamed)' && permissionEntry?.changes?.length === 2, permissionSummary);
+    check(
+      'revoked permission named by content type and action',
+      permissionEntry?.changes?.some((change) => change.op === 'removed' && change.path?.[0] === 'Content › Article' && change.path.length === 2),
+      permissionSummary
+    );
+    check(
+      'narrowed permission shows the fields before and after',
+      permissionEntry?.changes?.some((change) => change.path?.[2] === 'Fields' && change.op === 'removed' && JSON.stringify(change.before) === JSON.stringify(['body'])),
+      permissionSummary
+    );
+    const permissionRowsAfter = (await logs(token, '?category=role&pageSize=100'))?.results?.filter((row) => row.action.startsWith('permission.')).length ?? 0;
+    check('no per-permission noise for that save', permissionRowsAfter === permissionRowsBefore, `${permissionRowsBefore} → ${permissionRowsAfter}`);
+
     // --- Nested components inside a dynamic zone -------------------------------------------
     // Shaped like a page builder: sections (dynamic zone) → card grid → cards (repeatable) →
     // link (component), with a file and a relation on each card. The checks are about whether

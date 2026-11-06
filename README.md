@@ -15,8 +15,8 @@ Works with Strapi 5. Tested on 5.0.0 and 5.61.0. It does not support Strapi 4.
   - Failed saves are recorded too, with the error.
 - **Media:** uploads, edits and deletes of files and folders.
 - **Sign-in:** successful sign-ins, sign-outs, failed sign-ins and blocked sign-ins (too many attempts).
-- **Admin users:** invites, edits and deletes.
-- **Roles and permissions:** role changes and permission changes.
+- **Admin users:** invites, edits and deletes. Edits show each changed field before and after, with roles by name. Passwords are never stored, only that one was changed.
+- **Roles and permissions:** role renames, and permission changes. Saving a role's permissions is one entry listing what was granted, revoked and narrowed, by content type and action.
 - **Content types:** changes made in the Content-Type Builder.
 - **The audit log itself:** exports, integrity checks, settings changes and expired entries being removed. This category cannot be turned off.
 
@@ -140,7 +140,7 @@ npm run pack:local -- --install playground
 cd playground && node scripts/e2e-check.js
 ```
 
-`playground/scripts/e2e-check.js` starts a real Strapi server on a temporary database and runs 77 checks over HTTP: what gets recorded, the diffs (including edits deep inside dynamic zones, and what a publish put live), filters, permissions, export, settings and tamper detection.
+`playground/scripts/e2e-check.js` starts a real Strapi server on a temporary database and runs 89 checks over HTTP: what gets recorded, the diffs (including edits deep inside dynamic zones, what a publish put live, and admin user, role and permission changes), filters, permissions, export, settings and tamper detection.
 
 To check an older Strapi, copy the playground, pin `@strapi/strapi` and `@strapi/plugin-users-permissions` to that version, install the packed plugin and run the same script.
 

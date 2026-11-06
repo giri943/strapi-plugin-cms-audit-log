@@ -45,6 +45,7 @@ const ACTION_LABELS: Record<string, string> = {
   'permission.create': 'Granted permissions',
   'permission.update': 'Changed permissions',
   'permission.delete': 'Removed permissions',
+  'role.permissions.update': 'Changed role permissions',
   'content-type.create': 'Created content type',
   'content-type.update': 'Changed content type',
   'content-type.delete': 'Deleted content type',
