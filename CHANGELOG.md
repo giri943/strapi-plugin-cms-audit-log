@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.1
+
+- Clearer npm description and keywords, so the plugin shows up when people search for a Strapi audit log, audit trail or activity log.
+- README: logo, badges, and how to report issues and security problems.
+
 ## 1.0.0
 
 First stable release. It includes everything from the 0.1.0 betas below, and was tested end to end on Strapi 5.0, 5.42 and 5.61.

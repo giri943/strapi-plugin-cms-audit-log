@@ -1,7 +1,7 @@
 {
   "name": "strapi-plugin-cms-audit-log",
-  "version": "1.0.0",
-  "description": "Audit log for Strapi 5: records who changed what in the CMS, with a filterable dashboard, before/after diffs, tamper-evident signatures and CSV export.",
+  "version": "1.0.1",
+  "description": "Strapi 5 audit log plugin: track who changed what, with field-level before/after diffs, an activity dashboard, CSV export and signed entries.",
   "license": "MIT",
   "author": "Girish Soman (https://github.com/giri943)",
   "repository": {
@@ -16,13 +16,21 @@
     "strapi",
     "strapi-plugin",
     "strapi5",
+    "strapi-v5",
     "audit",
     "audit-log",
+    "audit-logs",
     "audit-trail",
     "activity-log",
-    "history",
+    "user-activity",
+    "change-history",
+    "version-history",
+    "content-history",
+    "diff",
+    "admin-panel",
     "security",
     "compliance",
+    "tamper-evident",
     "owasp",
     "csv-export"
   ],
@@ -103,7 +111,7 @@
     "kind": "plugin",
     "name": "cms-audit-log",
     "displayName": "Audit Log",
-    "description": "Who changed what, and when. Filterable activity dashboard with before/after diffs and CSV export."
+    "description": "Who changed what, and when: field-level before/after diffs, an activity dashboard and CSV export."
   },
   "peerDependenciesMeta": {
     "@strapi/utils": {

@@ -1,6 +1,12 @@
+<img src="https://raw.githubusercontent.com/giri943/strapi-plugin-cms-audit-log/main/docs/logo.png" alt="" width="80" height="80" align="right">
+
 # Audit Log for Strapi 5
 
-Know who changed what in your CMS, and when.
+[![npm](https://img.shields.io/npm/v/strapi-plugin-cms-audit-log)](https://www.npmjs.com/package/strapi-plugin-cms-audit-log)
+[![CI](https://github.com/giri943/strapi-plugin-cms-audit-log/actions/workflows/ci.yml/badge.svg)](https://github.com/giri943/strapi-plugin-cms-audit-log/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+Know who changed what in your CMS, and when. An audit trail and activity log for Strapi 5.
 
 This plugin records every change made in Strapi, from a typo fixed in a page title to a new API token, and shows it in a dashboard you can filter, search and export. Each entry says exactly what changed, not just that something did.
 
@@ -117,6 +123,10 @@ The full OWASP Top 10 review is in [docs/security.md](docs/security.md).
 - One entry keeps up to 200 changes. Past that, it notes how many were left out.
 - Rate limits are counted per server, so three servers behind a load balancer allow three times the limit.
 - Strapi Enterprise has its own audit log. Running both works, but you probably only need one.
+
+## Issues and feedback
+
+Found a bug or missing something? [Open an issue on GitHub](https://github.com/giri943/strapi-plugin-cms-audit-log/issues) with your Strapi version and the steps to reproduce it. Please report security problems privately through [GitHub security advisories](https://github.com/giri943/strapi-plugin-cms-audit-log/security/advisories/new), not as a public issue.
 
 ## Development
 
