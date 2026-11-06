@@ -276,6 +276,117 @@ async function main() {
     const permissionRowsAfter = (await logs(token, '?category=role&pageSize=100'))?.results?.filter((row) => row.action.startsWith('permission.')).length ?? 0;
     check('no per-permission noise for that save', permissionRowsAfter === permissionRowsBefore, `${permissionRowsBefore} → ${permissionRowsAfter}`);
 
+    // --- Media folders and files -------------------------------------------------------------
+    const products = (await http('POST', '/upload/folders', { token, body: { name: 'Products', parent: null } })).json?.data;
+    const testFolder = (await http('POST', '/upload/folders', { token, body: { name: 'test', parent: null } })).json?.data;
+    check('folders created', products?.id && testFolder?.id);
+    const renamed = await http('PUT', `/upload/folders/${testFolder?.id}`, { token, body: { name: 'test-1', parent: products?.id } });
+    check('folder renamed and moved', renamed.status === 200, renamed.text);
+
+    const uploadForm = new FormData();
+    uploadForm.append('files', new Blob([Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=', 'base64')], { type: 'image/png' }), 'hero.png');
+    uploadForm.append('fileInfo', JSON.stringify({ folder: products?.id }));
+    const uploaded = await fetch(`${BASE}/upload`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: uploadForm });
+    const file = (await uploaded.json())?.[0];
+    check('file uploaded', uploaded.status === 201 || uploaded.status === 200, uploaded.status);
+
+    const info = new FormData();
+    info.append('fileInfo', JSON.stringify({ name: 'hero-banner.png', alternativeText: 'Team photo', caption: '' }));
+    const edited = await fetch(`${BASE}/upload?id=${file?.id}`, { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: info });
+    check('file details edited', edited.status === 200, edited.status);
+
+    const archive = (await http('POST', '/upload/folders', { token, body: { name: 'Archive', parent: null } })).json?.data;
+    const bulkMove = await http('POST', '/upload/actions/bulk-move', { token, body: { destinationFolderId: archive?.id, folderIds: [testFolder?.id], fileIds: [] } });
+    check('folder moved with Move to…', bulkMove.status === 200, bulkMove.text.slice(0, 200));
+
+    const bulk = await http('POST', '/upload/actions/bulk-delete', { token, body: { fileIds: [], folderIds: [products?.id, archive?.id] } });
+    check('folder with contents deleted', bulk.status === 200, bulk.text);
+
+    // --- API tokens and webhooks -----------------------------------------------------------
+    const siteToken = (await http('POST', '/admin/api-tokens', { token, body: { name: 'Website', description: '', type: 'read-only', lifespan: null } })).json?.data;
+    check('API token created', siteToken?.id);
+    const tokenEdit = await http('PUT', `/admin/api-tokens/${siteToken?.id}`, {
+      token,
+      body: { name: 'Website build', description: 'Used by the site build', type: 'custom', permissions: ['api::article.article.find', 'api::article.article.findOne'] },
+    });
+    check('API token edited', tokenEdit.status === 200, tokenEdit.text.slice(0, 200));
+    const regenerated = await http('POST', `/admin/api-tokens/${siteToken?.id}/regenerate`, { token, body: {} });
+    const newKey = regenerated.json?.data?.accessKey;
+    check('API token regenerated', regenerated.status === 201 || regenerated.status === 200, regenerated.status);
+    await http('DELETE', `/admin/api-tokens/${siteToken?.id}`, { token });
+
+    const hookResponse = await http('POST', '/admin/webhooks', {
+      token,
+      body: { name: 'Deploy', url: 'https://example.com/deploy?token=s3cr3t', headers: { Authorization: 'Bearer one' }, events: ['entry.create', 'entry.publish'] },
+    });
+    const hook = hookResponse.json?.data;
+    check('webhook created', hook?.id, hookResponse.text.slice(0, 300));
+    const hookEdit = await http('PUT', `/admin/webhooks/${hook?.id}`, {
+      token,
+      body: { name: 'Deploy', url: 'https://example.com/deploy?token=s3cr3t', headers: { Authorization: 'Bearer two' }, events: ['entry.publish', 'entry.update'], isEnabled: false },
+    });
+    check('webhook edited', hookEdit.status === 200, hookEdit.text.slice(0, 200));
+    const hookDelete = await http('POST', '/admin/webhooks/batch-delete', { token, body: { ids: [hook?.id] } });
+    check('webhook deleted', hookDelete.status === 200, hookDelete.text.slice(0, 200));
+
+    await flush();
+    const mediaRows = (await logs(token, '?category=media,settings&pageSize=100'))?.results ?? [];
+    const entryFor = async (action, label) => {
+      const row = mediaRows.find((candidate) => candidate.action === action && (!label || candidate.targetLabel === label));
+      return row ? (await http('GET', `/cms-audit-log/logs/${row.id}`, { token })).json : undefined;
+    };
+    const at = (entry, label, op) => entry?.changes?.find((change) => change.path?.[0] === label && (!op || change.op === op));
+    const summary = (entry) => JSON.stringify(entry?.changes?.map((change) => [change.path?.join(' › '), change.op, change.before, change.after]));
+
+    const folderCreate = await entryFor('media-folder.create', 'test');
+    check('folder create shows name and location', at(folderCreate, 'Name')?.after === 'test' && at(folderCreate, 'Location')?.after === 'Media Library', summary(folderCreate));
+    const folderUpdate = (await Promise.all(mediaRows.filter((row) => row.action === 'media-folder.update' && row.targetLabel === 'test-1').map((row) => http('GET', `/cms-audit-log/logs/${row.id}`, { token }).then((response) => response.json)))).find((entry) => at(entry, 'Name'));
+    check(
+      'folder rename and move shown by name',
+      at(folderUpdate, 'Name')?.before === 'test' && at(folderUpdate, 'Name')?.after === 'test-1' && at(folderUpdate, 'Location')?.after === 'Media Library › Products',
+      summary(folderUpdate)
+    );
+    const folderDeletes = mediaRows.filter((row) => row.action === 'media-folder.delete').map((row) => row.targetLabel).sort();
+    check('bulk folder delete names each folder', JSON.stringify(folderDeletes) === JSON.stringify(['Archive', 'Products', 'test-1']), JSON.stringify(folderDeletes));
+    const bulkMoved = mediaRows.filter((row) => row.action === 'media-folder.update' && row.targetLabel === 'test-1');
+    const moveEntries = await Promise.all(bulkMoved.map((row) => http('GET', `/cms-audit-log/logs/${row.id}`, { token }).then((response) => response.json)));
+    check(
+      'Move to… shows the old and new location',
+      moveEntries.some((entry) => at(entry, 'Location')?.before === 'Media Library › Products' && at(entry, 'Location')?.after === 'Media Library › Archive'),
+      JSON.stringify(moveEntries.map(summary))
+    );
+
+    const fileUpload = await entryFor('media.create');
+    check('upload shows file name, type and folder', at(fileUpload, 'File name')?.after === 'hero.png' && at(fileUpload, 'Location')?.after === 'Media Library › Products' && at(fileUpload, 'Type')?.after === 'image/png', summary(fileUpload));
+    const fileEdit = await entryFor('media.update', 'hero-banner.png');
+    check('file edit shows name and alt text before and after', at(fileEdit, 'File name')?.before === 'hero.png' && at(fileEdit, 'Alternative text')?.after === 'Team photo', summary(fileEdit));
+    const fileDelete = await entryFor('media.delete', 'hero-banner.png');
+    check('file deleted with its folder is named', at(fileDelete, 'Location')?.before === 'Media Library › Products', summary(fileDelete));
+
+    const tokenUpdate = await entryFor('api-token.update', 'Website build');
+    check(
+      'API token edit shows name, type and permissions',
+      at(tokenUpdate, 'Name')?.after === 'Website build' && at(tokenUpdate, 'Token type')?.after === 'Custom' && JSON.stringify(at(tokenUpdate, 'Permissions', 'added')?.after) === JSON.stringify(['Article: find', 'Article: findOne']),
+      summary(tokenUpdate)
+    );
+    const tokenRegen = await entryFor('api-token.regenerate');
+    check('API token regeneration recorded without the key', at(tokenRegen, 'Token value')?.kind === 'redacted' && newKey && !JSON.stringify(tokenRegen).includes(newKey), summary(tokenRegen));
+    check('API token delete recorded', Boolean(await entryFor('api-token.delete', 'Website build')));
+
+    const hookUpdate = await entryFor('webhook.update', 'Deploy');
+    check(
+      'webhook edit shows events and enabled, hides header values',
+      JSON.stringify(at(hookUpdate, 'Events', 'removed')?.before) === JSON.stringify(['entry.create']) &&
+        JSON.stringify(at(hookUpdate, 'Events', 'added')?.after) === JSON.stringify(['entry.update']) &&
+        at(hookUpdate, 'Header values')?.kind === 'redacted',
+      summary(hookUpdate)
+    );
+    const hookCreate = await entryFor('webhook.create', 'Deploy');
+    check('webhook URL token hidden', at(hookCreate, 'URL')?.after === 'https://example.com/deploy?token=•••', summary(hookCreate));
+    check('webhook delete recorded', Boolean(await entryFor('webhook.delete', 'Deploy')));
+    const settingsTexts = await Promise.all(mediaRows.map((row) => http('GET', `/cms-audit-log/logs/${row.id}`, { token }).then((response) => response.text)));
+    check('no secrets in settings entries', !/s3cr3t|Bearer (one|two)/.test(settingsTexts.join(' ')));
+
     // --- Nested components inside a dynamic zone -------------------------------------------
     // Shaped like a page builder: sections (dynamic zone) → card grid → cards (repeatable) →
     // link (component), with a file and a relation on each card. The checks are about whether

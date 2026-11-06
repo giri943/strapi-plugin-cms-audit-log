@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-beta.3
+
+- Media files and folders show what changed, before and after: name, location ("Media Library › Products" rather than `/3/12`), and for files the alternative text, caption, type, size and file. Moves are recorded, including "Move to…" on several items. Deleted files and folders keep their name and location; before, a deleted folder had neither.
+- New **Settings** category recording API tokens, transfer tokens and webhooks: create, edit, regenerate and delete, field by field. Token values are never read; regenerating one is shown as "Token value: changed". Webhook header values are hidden, and query string values in webhook URLs are masked.
+- Uploads whose metadata Strapi rewrites on its own (formats, provider data) no longer produce empty "Updated file" entries.
+
 ## 0.1.0-beta.2
 
 - Admin user updates show each changed field before and after: name, email, username, active, blocked, interface language, and roles by name ("Roles: Editor → Author"). A password change is shown as changed, never with a value. Before, the entry showed the user as JSON after the change, with role ids.

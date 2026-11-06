@@ -1,6 +1,6 @@
 {
   "name": "strapi-plugin-cms-audit-log",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "description": "Audit log for Strapi 5: records who changed what in the CMS, with a filterable dashboard, before/after diffs, tamper-evident signatures and CSV export.",
   "license": "MIT",
   "author": "Girish Soman (https://github.com/giri943)",

@@ -16,9 +16,12 @@ import {
   type PermissionLabels,
   type PermissionRow,
 } from '../core/admin-diff';
+import { createHash } from 'node:crypto';
 import { adminActor, resolveActor, requestInfo, type RequestLike } from '../core/actor';
+import { diffRecord, durationLabel, maskUrl, type FieldSpec } from '../core/record-diff';
 import {
   buildPopulate,
+  stableStringify,
   diffDocumentDetailed,
   summariseRelationWrite,
   type AttributeInfo,
@@ -83,6 +86,49 @@ function idFromWhere(where: Record<string, unknown> | undefined): string | undef
 }
 
 const capitalise = (text: string) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+
+const MEDIA_FOLDER = 'plugin::upload.folder';
+const MEDIA_FILE = 'plugin::upload.file';
+
+const FOLDER_FIELDS: FieldSpec[] = [
+  { key: 'name', label: 'Name' },
+  { key: 'location', label: 'Location' },
+];
+const FILE_FIELDS: FieldSpec[] = [
+  { key: 'name', label: 'File name' },
+  { key: 'alternativeText', label: 'Alternative text' },
+  { key: 'caption', label: 'Caption' },
+  { key: 'location', label: 'Location' },
+  { key: 'mime', label: 'Type' },
+  { key: 'size', label: 'Size' },
+  { key: 'url', label: 'File' },
+];
+
+/** Key on `ctx.state` holding media rows read at the start of a move request. */
+const MEDIA_BEFORE = 'cmsAuditLogMediaBefore';
+const FOLDER_UPDATE_PATH = /^\/upload\/folders\/([^/]+)\/?$/;
+const BULK_MOVE_PATH = /^\/upload\/actions\/bulk-move\/?$/;
+/** Above this many files, a bulk move records folders only; reading every file would cost too much. */
+const MAX_MOVE_SNAPSHOT_FILES = 5_000;
+
+type SettingsKind = 'api-token' | 'transfer-token' | 'webhook';
+
+/**
+ * Admin routes that change API tokens, transfer tokens and webhooks. `/trigger` (a webhook test
+ * call) changes nothing and is not matched.
+ */
+const SETTINGS_ROUTES: Array<{ kind: SettingsKind; pattern: RegExp }> = [
+  { kind: 'api-token', pattern: /^\/admin\/api-tokens(?:\/[^/]+(?:\/regenerate)?)?\/?$/ },
+  { kind: 'transfer-token', pattern: /^\/admin\/transfer\/tokens(?:\/[^/]+(?:\/regenerate)?)?\/?$/ },
+  { kind: 'webhook', pattern: /^\/admin\/webhooks(?:\/[^/]+)?\/?$/ },
+];
+
+const permissionActions = (permissions: unknown): string[] =>
+  Array.isArray(permissions)
+    ? permissions
+        .map((permission) => (permission && typeof permission === 'object' ? (permission as { action?: unknown }).action : permission))
+        .filter((action): action is string => typeof action === 'string')
+    : [];
 
 /**
  * The status Strapi's error middleware will give a thrown error.
@@ -417,6 +463,200 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
       return user;
     }
   }
+
+  // --- Media files and folders ------------------------------------------------------------------
+
+  /**
+   * "Media Library › Products › 2026" for a folder path such as `/3/12/40`. Strapi stores
+   * locations as chains of folder `pathId`s, which mean nothing to a reader.
+   */
+  async function locationOf(path: unknown): Promise<string> {
+    const ids = typeof path === 'string' ? path.split('/').filter(Boolean).map(Number).filter(Number.isFinite) : [];
+    if (ids.length === 0) return 'Media Library';
+    try {
+      const folders = await query(MEDIA_FOLDER).findMany({ where: { pathId: { $in: ids } }, select: ['pathId', 'name'] });
+      const names = new Map(folders.map((folder) => [Number(folder.pathId), String(folder.name)]));
+      return ['Media Library', ...ids.map((id) => names.get(id) ?? `Folder #${id}`)].join(' › ');
+    } catch {
+      return path as string;
+    }
+  }
+
+  /** The parent location of a folder: its path without its own last segment. */
+  const parentPath = (path: unknown) => (typeof path === 'string' ? path.replace(/\/[^/]*$/, '') : '');
+
+  async function mediaSnapshot(uid: string, row: Record<string, unknown> | null): Promise<Record<string, unknown> | null> {
+    if (!row) return null;
+    if (uid === MEDIA_FOLDER) return { name: row.name ?? null, location: await locationOf(parentPath(row.path)) };
+    const size = Number(row.size);
+    return {
+      name: row.name ?? null,
+      alternativeText: row.alternativeText ?? null,
+      caption: row.caption ?? null,
+      location: await locationOf(row.folderPath),
+      mime: row.mime ?? null,
+      size: Number.isFinite(size) ? `${size.toLocaleString('en', { maximumFractionDigits: 1 })} KB` : null,
+      url: row.url ?? null,
+    };
+  }
+
+  async function recordMedia(
+    uid: string,
+    op: 'create' | 'update' | 'delete',
+    row: Record<string, unknown> | null,
+    changes: FieldChange[]
+  ) {
+    const ctx = currentRequest();
+    const actor = resolveActor(ctx);
+    const current = await settings();
+    if (!shouldRecord(current, 'media', actor, uid)) return;
+
+    const id = row?.documentId ?? row?.id;
+    enqueue(
+      {
+        action: `${uid === MEDIA_FOLDER ? 'media-folder' : 'media'}.${op}`,
+        category: 'media',
+        outcome: 'success',
+        actor,
+        request: requestInfo(ctx),
+        targetUid: uid,
+        targetId: id === undefined || id === null ? undefined : String(id),
+        targetLabel: typeof row?.name === 'string' ? row.name : undefined,
+        changes,
+        occurredAt: new Date(),
+      },
+      current
+    );
+  }
+
+  // --- API tokens, transfer tokens and webhooks ---------------------------------------------------
+
+  const TOKEN_TYPES: Record<string, string> = { 'read-only': 'Read-only', 'full-access': 'Full access', custom: 'Custom' };
+
+  /** "Pages: find" for `api::page.page.find`; plugin and other actions are kept as they are. */
+  function contentApiAction(action: unknown): string {
+    const text = String(action);
+    const match = /^(api::[^.]+\.[^.]+)\.(.+)$/.exec(text);
+    if (!match) return text;
+    const model = strapi.getModel(match[1] as never) as { info?: { displayName?: string } } | undefined;
+    return `${model?.info?.displayName ?? match[1]}: ${match[2]}`;
+  }
+
+  const fingerprint = (value: unknown) => createHash('sha256').update(stableStringify(value ?? null)).digest('hex');
+
+  const SETTINGS_KINDS: Record<
+    SettingsKind,
+    { uid: string; fields: FieldSpec[]; load(): Promise<Map<string, { label?: string; snapshot: Record<string, unknown> }>> }
+  > = {
+    'api-token': {
+      uid: 'admin::api-token',
+      fields: [
+        { key: 'name', label: 'Name' },
+        { key: 'description', label: 'Description' },
+        { key: 'type', label: 'Token type' },
+        { key: 'duration', label: 'Duration' },
+        { key: 'expiresAt', label: 'Expires' },
+        { key: 'permissions', label: 'Permissions', list: true },
+      ],
+      async load() {
+        const rows = await query('admin::api-token').findMany({
+          select: ['id', 'name', 'description', 'type', 'lifespan', 'expiresAt'],
+          populate: { permissions: { select: ['action'] } },
+        });
+        return new Map(
+          rows.map((row) => [
+            String(row.id),
+            {
+              label: typeof row.name === 'string' ? row.name : undefined,
+              snapshot: {
+                name: row.name ?? null,
+                description: row.description ?? null,
+                type: TOKEN_TYPES[String(row.type)] ?? row.type ?? null,
+                duration: durationLabel(row.lifespan),
+                expiresAt: row.expiresAt ? new Date(String(row.expiresAt)).toISOString() : 'Never',
+                permissions: row.type === 'custom' ? permissionActions(row.permissions).map(contentApiAction).sort() : [],
+              },
+            },
+          ])
+        );
+      },
+    },
+    'transfer-token': {
+      uid: 'admin::transfer-token',
+      fields: [
+        { key: 'name', label: 'Name' },
+        { key: 'description', label: 'Description' },
+        { key: 'duration', label: 'Duration' },
+        { key: 'expiresAt', label: 'Expires' },
+        { key: 'permissions', label: 'Access', list: true },
+      ],
+      async load() {
+        const rows = await query('admin::transfer-token').findMany({
+          select: ['id', 'name', 'description', 'lifespan', 'expiresAt'],
+          populate: { permissions: { select: ['action'] } },
+        });
+        return new Map(
+          rows.map((row) => [
+            String(row.id),
+            {
+              label: typeof row.name === 'string' ? row.name : undefined,
+              snapshot: {
+                name: row.name ?? null,
+                description: row.description ?? null,
+                duration: durationLabel(row.lifespan),
+                expiresAt: row.expiresAt ? new Date(String(row.expiresAt)).toISOString() : 'Never',
+                permissions: permissionActions(row.permissions).sort(),
+              },
+            },
+          ])
+        );
+      },
+    },
+    webhook: {
+      uid: 'strapi::webhook',
+      fields: [
+        { key: 'name', label: 'Name' },
+        { key: 'url', label: 'URL' },
+        { key: 'enabled', label: 'Enabled' },
+        { key: 'events', label: 'Events', list: true },
+        { key: 'contentTypeEvents', label: 'Content type events', list: true },
+        { key: 'headers', label: 'Headers', list: true },
+        { key: 'headerValues', label: 'Header values', secret: true },
+      ],
+      async load() {
+        const rows = await query('strapi::webhook').findMany({});
+        return new Map(
+          rows.map((row) => {
+            const headers = (row.headers && typeof row.headers === 'object' ? row.headers : {}) as Record<string, unknown>;
+            return [
+              String(row.id),
+              {
+                label: typeof row.name === 'string' ? row.name : undefined,
+                snapshot: {
+                  name: row.name ?? null,
+                  url: maskUrl(row.url),
+                  enabled: row.enabled ?? null,
+                  events: Array.isArray(row.events) ? row.events.map(String).sort() : [],
+                  // Strapi 5.x later versions can narrow events per content type.
+                  contentTypeEvents: Object.entries(
+                    (row.contentTypeEvents && typeof row.contentTypeEvents === 'object' ? row.contentTypeEvents : {}) as Record<string, unknown>
+                  )
+                    .flatMap(([uid, events]) => {
+                      const model = strapi.getModel(uid as never) as { info?: { displayName?: string } } | undefined;
+                      return (Array.isArray(events) ? events : []).map((event) => `${model?.info?.displayName ?? uid}: ${String(event)}`);
+                    })
+                    .sort(),
+                  headers: Object.keys(headers).sort(),
+                  // Compared, never shown: values are often credentials.
+                  headerValues: Object.keys(headers).length > 0 ? fingerprint(headers) : null,
+                },
+              },
+            ];
+          })
+        );
+      },
+    },
+  };
 
   function diff(
     mode: 'create' | 'update' | 'compare',
@@ -776,7 +1016,272 @@ export default ({ strapi }: { strapi: Core.Strapi }) => {
       };
     },
 
-    /** Event hub subscriber for media, auth, admin users, roles and schema changes. */
+    /**
+     * Database lifecycle subscriber for media files and folders.
+     *
+     * The upload plugin's events carry little: a folder deletion arrives as `{ folders }` with no
+     * name to show, and a rename or move says only where the folder is now. Reading each row
+     * before and after the write gives "Name: test → test-1" and "Location: Media Library →
+     * Media Library › Products", and keeps the name and location of what was deleted.
+     */
+    mediaLifecycles() {
+      type Deleted = { row: Record<string, unknown>; snapshot: Record<string, unknown> | null };
+      type State = { before?: Record<string, unknown> | null; deleted?: Deleted[] };
+      const uidOf = (event: LifecycleEvent) => event.model?.uid as string;
+      const fieldsOf = (uid: string) => (uid === MEDIA_FOLDER ? FOLDER_FIELDS : FILE_FIELDS);
+      const fail = (what: string, error: unknown) =>
+        strapi.log.error(
+          `[${PLUGIN_NAME}] Could not record a media ${what}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      const state = (event: LifecycleEvent) => (event.state ?? {}) as State;
+      const recordDeleted = async (event: LifecycleEvent) => {
+        const uid = uidOf(event);
+        for (const { row, snapshot } of state(event).deleted ?? []) {
+          try {
+            await recordMedia(uid, 'delete', row, diffRecord(fieldsOf(uid), snapshot, null));
+          } catch (error) {
+            fail('delete', error);
+          }
+        }
+      };
+      // Locations are worked out before the delete: a bulk delete removes parent folders in the
+      // same statement, and their names are needed to describe where each item was.
+      const snapshotAll = async (uid: string, rows: Record<string, unknown>[]): Promise<Deleted[]> =>
+        Promise.all(rows.map(async (row) => ({ row, snapshot: await mediaSnapshot(uid, row) })));
+
+      return {
+        models: [MEDIA_FOLDER, MEDIA_FILE],
+
+        async afterCreate(event: LifecycleEvent & { result?: Record<string, unknown> }) {
+          try {
+            const uid = uidOf(event);
+            const after = await mediaSnapshot(uid, event.result ?? null);
+            await recordMedia(uid, 'create', event.result ?? null, diffRecord(fieldsOf(uid), null, after));
+          } catch (error) {
+            fail('upload', error);
+          }
+        },
+
+        async beforeUpdate(event: LifecycleEvent) {
+          try {
+            const id = idFromWhere(event.params?.where);
+            if (!id || !event.state) return;
+            // A folder move rewrites `path` with raw SQL before this update runs, so the row read
+            // here would already show the new location. `mediaMoveMiddleware` read it at the start
+            // of the request; prefer that copy.
+            const early = (currentRequest()?.state as Record<string, unknown> | undefined)?.[MEDIA_BEFORE] as
+              | Record<string, Record<string, unknown>>
+              | undefined;
+            event.state.before = early?.[`${uidOf(event)}:${id}`] ?? (await query(uidOf(event)).findOne({ where: { id } }));
+          } catch {
+            // Without a before state the update is not recorded.
+          }
+        },
+
+        async afterUpdate(event: LifecycleEvent) {
+          try {
+            const uid = uidOf(event);
+            const id = idFromWhere(event.params?.where);
+            const beforeRow = state(event).before;
+            if (!id || !beforeRow) return;
+
+            const afterRow = await query(uid).findOne({ where: { id } });
+            const changes = diffRecord(fieldsOf(uid), await mediaSnapshot(uid, beforeRow), await mediaSnapshot(uid, afterRow));
+            // Strapi rewrites file metadata (formats, provider data) on its own; only a change a
+            // person can see is worth an entry.
+            if (changes.length === 0) return;
+            await recordMedia(uid, 'update', afterRow ?? beforeRow, changes);
+          } catch (error) {
+            fail('update', error);
+          }
+        },
+
+        async beforeDelete(event: LifecycleEvent) {
+          try {
+            const id = idFromWhere(event.params?.where);
+            if (!id || !event.state) return;
+            const row = await query(uidOf(event)).findOne({ where: { id } });
+            event.state.deleted = row ? await snapshotAll(uidOf(event), [row]) : [];
+          } catch {
+            // Without a before state the delete is not recorded.
+          }
+        },
+
+        async beforeDeleteMany(event: LifecycleEvent) {
+          try {
+            if (!event.state || !event.params?.where) return;
+            const rows = await query(uidOf(event)).findMany({ where: event.params.where, limit: 500 });
+            event.state.deleted = await snapshotAll(uidOf(event), rows);
+          } catch {
+            // Without a before state the delete is not recorded.
+          }
+        },
+
+        afterDelete: recordDeleted,
+        afterDeleteMany: recordDeleted,
+      };
+    },
+
+    /**
+     * Koa middleware for media moves, which the upload plugin does with raw SQL that no lifecycle
+     * hook sees.
+     *
+     * - Moving one folder (`PUT /upload/folders/:id`): the folder is read before the request, and
+     *   the lifecycle hook for the name update that follows uses that copy as the before state.
+     * - Moving several items ("Move to…"): folder locations, and file locations for libraries up to
+     *   5,000 files, are read before the request; afterwards each moved item gets its own entry.
+     */
+    mediaMoveMiddleware() {
+      return async (
+        ctx: RequestLike & { status?: number; state?: Record<string, unknown>; request?: { body?: unknown } },
+        next: Next
+      ) => {
+        const single = ctx.method === 'PUT' ? FOLDER_UPDATE_PATH.exec(ctx.path ?? '') : null;
+        const bulk = ctx.method === 'POST' && BULK_MOVE_PATH.test(ctx.path ?? '');
+        if (!single && !bulk) return next();
+
+        if (single) {
+          try {
+            const row = await query(MEDIA_FOLDER).findOne({ where: { id: single[1] } });
+            if (row) {
+              ctx.state = ctx.state ?? {};
+              ctx.state[MEDIA_BEFORE] = { [`${MEDIA_FOLDER}:${single[1]}`]: row };
+            }
+          } catch {
+            // The rename is still recorded; only the old location is lost.
+          }
+          return next();
+        }
+
+        let folders: Record<string, unknown>[] = [];
+        let files: Record<string, unknown>[] = [];
+        try {
+          folders = await query(MEDIA_FOLDER).findMany({ select: ['id', 'documentId', 'name', 'path', 'pathId'] });
+          const total = Number(await (strapi.db.query(MEDIA_FILE as never) as unknown as { count(): Promise<number> }).count());
+          if (total <= MAX_MOVE_SNAPSHOT_FILES) {
+            files = await query(MEDIA_FILE).findMany({ select: ['id', 'documentId', 'name', 'folderPath'] });
+          }
+        } catch {
+          // Moves are then not recorded.
+        }
+
+        await next();
+
+        try {
+          const status = Number(ctx.status ?? 200);
+          const body = (ctx.request?.body ?? {}) as { fileIds?: unknown; folderIds?: unknown };
+          if (status >= 400) return;
+
+          const moved = async (uid: string, ids: unknown, rows: Record<string, unknown>[]) => {
+            const wanted = new Set((Array.isArray(ids) ? ids : []).map(String));
+            for (const before of rows.filter((row) => wanted.has(String(row.id)))) {
+              const after = await query(uid).findOne({ where: { id: before.id } });
+              const changes = diffRecord(
+                uid === MEDIA_FOLDER ? FOLDER_FIELDS : FILE_FIELDS,
+                { location: await locationOf(uid === MEDIA_FOLDER ? parentPath(before.path) : before.folderPath) },
+                { location: await locationOf(uid === MEDIA_FOLDER ? parentPath(after?.path) : after?.folderPath) }
+              );
+              if (changes.length > 0) await recordMedia(uid, 'update', after ?? before, changes);
+            }
+          };
+          await moved(MEDIA_FOLDER, body.folderIds, folders);
+          await moved(MEDIA_FILE, body.fileIds, files);
+        } catch (error) {
+          strapi.log.error(
+            `[${PLUGIN_NAME}] Could not record a media move: ${error instanceof Error ? error.message : String(error)}`
+          );
+        }
+      };
+    },
+
+    /**
+     * Koa middleware recording changes to API tokens, transfer tokens and webhooks.
+     *
+     * Strapi emits no events for these. Each is a short list, so the whole list is read before
+     * and after the request and compared by id: that covers create, edit, regenerate, delete and
+     * bulk delete without parsing request bodies. A token's secret is never read; regenerating
+     * it is recorded as "Token value: changed".
+     */
+    settingsMiddleware() {
+      return async (ctx: RequestLike & { status?: number }, next: Next) => {
+        const route =
+          ctx.method === 'POST' || ctx.method === 'PUT' || ctx.method === 'DELETE'
+            ? SETTINGS_ROUTES.find((candidate) => candidate.pattern.test(ctx.path ?? ''))
+            : undefined;
+        if (!route) return next();
+
+        const kind = SETTINGS_KINDS[route.kind];
+        let before: Awaited<ReturnType<typeof kind.load>> | null = null;
+        try {
+          before = await kind.load();
+        } catch {
+          before = null;
+        }
+
+        let thrown: unknown;
+        try {
+          await next();
+        } catch (error) {
+          thrown = error;
+          throw error;
+        } finally {
+          if (before) {
+            try {
+              const status = thrown ? statusOfThrown(thrown) : Number(ctx.status ?? 200);
+              const actor = resolveActor(ctx);
+              const current = await settings();
+              const regenerated = /\/regenerate\/?$/.test(ctx.path ?? '');
+
+              if (status < 400 && shouldRecord(current, 'settings', actor, kind.uid)) {
+                const after = await kind.load();
+                const record = (op: string, id: string, label: string | undefined, changes: FieldChange[]) =>
+                  enqueue(
+                    {
+                      action: `${route.kind}.${op}`,
+                      category: 'settings',
+                      outcome: 'success',
+                      actor,
+                      request: requestInfo(ctx),
+                      targetUid: kind.uid,
+                      targetId: id,
+                      targetLabel: label,
+                      changes,
+                      occurredAt: new Date(),
+                    },
+                    current
+                  );
+
+                for (const [id, now] of after) {
+                  const was = before.get(id);
+                  if (!was) {
+                    record('create', id, now.label, diffRecord(kind.fields, null, now.snapshot));
+                    continue;
+                  }
+                  const changes = diffRecord(kind.fields, was.snapshot, now.snapshot);
+                  if (regenerated && ctx.path?.includes(`/${id}/`)) {
+                    changes.push({ field: 'accessKey', path: ['Token value'], op: 'changed', kind: 'redacted' });
+                    record('regenerate', id, now.label, changes);
+                  } else if (changes.length > 0) {
+                    record('update', id, now.label, changes);
+                  }
+                }
+                for (const [id, was] of before) {
+                  if (!after.has(id)) record('delete', id, was.label, diffRecord(kind.fields, was.snapshot, null));
+                }
+              }
+            } catch (error) {
+              strapi.log.error(
+                `[${PLUGIN_NAME}] Could not record a ${route.kind} change: ${
+                  error instanceof Error ? error.message : String(error)
+                }`
+              );
+            }
+          }
+        }
+      };
+    },
+
+    /** Event hub subscriber for auth, admin users, roles and schema changes. */
     async handleEvent(name: string, payload: unknown): Promise<void> {
       try {
         const mapped = mapEvent(name, payload as Record<string, unknown> | undefined);

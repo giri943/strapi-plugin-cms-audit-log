@@ -213,6 +213,189 @@ describe('event capture', () => {
   });
 });
 
+describe('media files and folders', () => {
+  /** A fake query engine over a few folders and one file. */
+  function withMedia(fake: ReturnType<typeof fakeStrapi>) {
+    const folders: Record<string, any>[] = [
+      { id: 1, documentId: 'f1', name: 'Products', pathId: 3, path: '/3' },
+      { id: 2, documentId: 'f2', name: 'test', pathId: 12, path: '/12' },
+    ];
+    const files: Record<string, any>[] = [
+      { id: 9, documentId: 'x9', name: 'hero.png', alternativeText: null, caption: null, folderPath: '/3', mime: 'image/png', size: 12.5, url: '/uploads/hero.png' },
+    ];
+    const table = (uid: string) => (uid === 'plugin::upload.folder' ? folders : files);
+    fake.strapi.db = {
+      query: (uid: string) => ({
+        findOne: async ({ where }: any) => structuredClone(table(uid).find((row) => String(row.id) === String(where.id)) ?? null),
+        findMany: async ({ where }: any) =>
+          where?.pathId
+            ? folders.filter((folder) => where.pathId.$in.includes(folder.pathId))
+            : structuredClone(table(uid).filter((row) => !where?.id?.$in || where.id.$in.includes(row.id))),
+      }),
+    };
+    return { folders, files };
+  }
+
+  const event = (uid: string, id: number, extra: Record<string, unknown> = {}) => ({
+    model: { uid },
+    params: { where: { id } },
+    state: {} as Record<string, unknown>,
+    ...extra,
+  });
+
+  it('records a folder rename and move with names, not path ids', async () => {
+    const fake = fakeStrapi();
+    const { folders } = withMedia(fake);
+    const hooks = fake.capture.mediaLifecycles();
+
+    const update = event('plugin::upload.folder', 2);
+    await hooks.beforeUpdate(update);
+    Object.assign(folders[1], { name: 'test-1', path: '/3/12' });
+    await hooks.afterUpdate(update);
+
+    expect(fake.queued[0]).toMatchObject({
+      action: 'media-folder.update',
+      targetLabel: 'test-1',
+      changes: [
+        { path: ['Name'], before: 'test', after: 'test-1' },
+        { path: ['Location'], before: 'Media Library', after: 'Media Library › Products' },
+      ],
+    });
+  });
+
+  it('keeps the name and location of deleted folders and files', async () => {
+    const fake = fakeStrapi();
+    withMedia(fake);
+    const hooks = fake.capture.mediaLifecycles();
+
+    const many = { ...event('plugin::upload.folder', 0), params: { where: { id: { $in: [2] } } } };
+    await hooks.beforeDeleteMany(many);
+    await hooks.afterDeleteMany(many);
+
+    const one = event('plugin::upload.file', 9);
+    await hooks.beforeDelete(one);
+    await hooks.afterDelete(one);
+
+    expect(fake.queued.map((entry) => [entry.action, entry.targetLabel])).toEqual([
+      ['media-folder.delete', 'test'],
+      ['media.delete', 'hero.png'],
+    ]);
+    expect(fake.queued[1].changes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ['Location'], op: 'removed', before: 'Media Library › Products' })])
+    );
+  });
+
+  it('skips file updates nobody can see, such as regenerated formats', async () => {
+    const fake = fakeStrapi();
+    withMedia(fake);
+    const hooks = fake.capture.mediaLifecycles();
+
+    const update = event('plugin::upload.file', 9);
+    await hooks.beforeUpdate(update);
+    await hooks.afterUpdate(update);
+    expect(fake.queued).toHaveLength(0);
+  });
+});
+
+describe('API tokens and webhooks', () => {
+  const adminCtx = (method: string, path: string): any => ({
+    method,
+    path,
+    status: 200,
+    state: { auth: { strategy: { name: 'admin' } }, user: { id: 7, email: 'ann@example.com', firstname: 'Ann' } },
+    request: { ip: '1.2.3.4' },
+    get: () => 'UA',
+  });
+
+  function withSettings(fake: ReturnType<typeof fakeStrapi>) {
+    const rows: Record<string, any[]> = {
+      'strapi::webhook': [
+        { id: 1, name: 'Deploy', url: 'https://hooks.example.com/a?token=s3cr3t', enabled: true, events: ['entry.publish'], headers: { Authorization: 'Bearer one' } },
+      ],
+      'admin::api-token': [{ id: 4, name: 'Website', description: '', type: 'read-only', lifespan: null, expiresAt: null, permissions: [] }],
+      'admin::transfer-token': [],
+    };
+    fake.strapi.db = { query: (uid: string) => ({ findMany: async () => structuredClone(rows[uid] ?? []) }) };
+    return rows;
+  }
+
+  it('records a webhook edit, hiding header values and URL query values', async () => {
+    const fake = fakeStrapi();
+    const rows = withSettings(fake);
+
+    await fake.capture.settingsMiddleware()(adminCtx('PUT', '/admin/webhooks/1'), async () => {
+      Object.assign(rows['strapi::webhook'][0], { events: ['entry.publish', 'entry.update'], headers: { Authorization: 'Bearer two' } });
+    });
+
+    expect(fake.queued).toHaveLength(1);
+    expect(fake.queued[0]).toMatchObject({
+      action: 'webhook.update',
+      category: 'settings',
+      targetLabel: 'Deploy',
+      changes: [
+        { path: ['Events'], op: 'added', after: ['entry.update'] },
+        { path: ['Header values'], op: 'changed', kind: 'redacted' },
+      ],
+    });
+    expect(JSON.stringify(fake.queued)).not.toMatch(/Bearer|s3cr3t/);
+  });
+
+  it('records webhook create and bulk delete, one entry per webhook', async () => {
+    const fake = fakeStrapi();
+    const rows = withSettings(fake);
+
+    await fake.capture.settingsMiddleware()(adminCtx('POST', '/admin/webhooks'), async () => {
+      rows['strapi::webhook'].push({ id: 2, name: 'Search', url: 'https://search.example.com', enabled: true, events: ['entry.create'], headers: {} });
+    });
+    await fake.capture.settingsMiddleware()(adminCtx('POST', '/admin/webhooks/batch-delete'), async () => {
+      rows['strapi::webhook'] = [];
+    });
+
+    expect(fake.queued.map((entry) => [entry.action, entry.targetLabel])).toEqual([
+      ['webhook.create', 'Search'],
+      ['webhook.delete', 'Deploy'],
+      ['webhook.delete', 'Search'],
+    ]);
+    expect(fake.queued[1].changes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: ['URL'], before: 'https://hooks.example.com/a?token=•••' })])
+    );
+  });
+
+  it('records an API token regeneration without the token, and a type change', async () => {
+    const fake = fakeStrapi();
+    const rows = withSettings(fake);
+
+    await fake.capture.settingsMiddleware()(adminCtx('POST', '/admin/api-tokens/4/regenerate'), async () => undefined);
+    await fake.capture.settingsMiddleware()(adminCtx('PUT', '/admin/api-tokens/4'), async () => {
+      Object.assign(rows['admin::api-token'][0], { type: 'full-access', lifespan: 7 * 86_400_000 });
+    });
+
+    expect(fake.queued[0]).toMatchObject({
+      action: 'api-token.regenerate',
+      changes: [{ path: ['Token value'], op: 'changed', kind: 'redacted' }],
+    });
+    expect(fake.queued[1]).toMatchObject({
+      action: 'api-token.update',
+      changes: [
+        { path: ['Token type'], before: 'Read-only', after: 'Full access' },
+        { path: ['Duration'], before: 'Unlimited', after: '7 days' },
+      ],
+    });
+  });
+
+  it('records nothing for a refused request or a webhook test call', async () => {
+    const fake = fakeStrapi();
+    withSettings(fake);
+
+    const refused = adminCtx('PUT', '/admin/webhooks/1');
+    refused.status = 400;
+    await fake.capture.settingsMiddleware()(refused, async () => undefined);
+    await fake.capture.settingsMiddleware()(adminCtx('POST', '/admin/webhooks/1/trigger'), async () => undefined);
+
+    expect(fake.queued).toHaveLength(0);
+  });
+});
+
 describe('admin user and role updates', () => {
   /** A fake query engine over one admin user, one role and its permissions. */
   function withAdminData(fake: ReturnType<typeof fakeStrapi>) {

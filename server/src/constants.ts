@@ -10,6 +10,7 @@ export const CATEGORIES = [
   'admin-user',
   'role',
   'schema',
+  'settings',
   'audit',
 ] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -37,15 +38,11 @@ export type WriteAction = (typeof WRITE_ACTIONS)[number];
  *
  * `entry.*` is deliberately absent: content changes are captured by the Document Service
  * middleware instead, because only there is the "before" state still readable for a diff.
- * Recording both would log every edit twice.
+ * Recording both would log every edit twice. `media.*` and `media-folder.*` are absent for the
+ * same reason: files and folders are recorded by a database lifecycle subscriber that reads them
+ * before and after each write.
  */
 export const EVENT_HUB_EVENTS: Record<string, Category> = {
-  'media.create': 'media',
-  'media.update': 'media',
-  'media.delete': 'media',
-  'media-folder.create': 'media',
-  'media-folder.update': 'media',
-  'media-folder.delete': 'media',
   'admin.auth.success': 'auth',
   'admin.logout': 'auth',
   'user.create': 'admin-user',

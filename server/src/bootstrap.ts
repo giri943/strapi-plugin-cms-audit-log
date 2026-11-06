@@ -6,7 +6,7 @@ import type { PluginSettings } from './services/settings';
 const PRUNE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 let unsubscribe: (() => void) | null = null;
-let unsubscribeLifecycles: (() => void) | null = null;
+let unsubscribeLifecycles: Array<() => void> = [];
 let pruneTimer: NodeJS.Timeout | null = null;
 
 const bootstrap = async ({ strapi }: { strapi: Core.Strapi }) => {
@@ -26,13 +26,19 @@ const bootstrap = async ({ strapi }: { strapi: Core.Strapi }) => {
     plugin.service('capture').handleEvent(name, args[0])
   ) as unknown as () => void;
 
-  // Admin users and roles are read before and after each update, for a before/after diff.
-  try {
-    const lifecycles = strapi.db.lifecycles as unknown as { subscribe(subscriber: unknown): unknown };
-    const result = lifecycles.subscribe(plugin.service('capture').adminLifecycles());
-    unsubscribeLifecycles = typeof result === 'function' ? (result as () => void) : null;
-  } catch (error) {
-    strapi.log.error(`[${PLUGIN_NAME}] Could not watch admin user and role updates; they are logged without a diff.`, error);
+  // Admin users, roles, media files and folders are read before and after each write, for a
+  // before/after diff.
+  const lifecycles = strapi.db.lifecycles as unknown as { subscribe(subscriber: unknown): unknown };
+  for (const [name, subscriber] of [
+    ['admin user and role', () => plugin.service('capture').adminLifecycles()],
+    ['media', () => plugin.service('capture').mediaLifecycles()],
+  ] as const) {
+    try {
+      const result = lifecycles.subscribe(subscriber());
+      if (typeof result === 'function') unsubscribeLifecycles.push(result as () => void);
+    } catch (error) {
+      strapi.log.error(`[${PLUGIN_NAME}] Could not watch ${name} changes.`, error);
+    }
   }
 
   /**
@@ -68,8 +74,8 @@ export const stopBackgroundWork = () => {
   pruneTimer = null;
   unsubscribe?.();
   unsubscribe = null;
-  unsubscribeLifecycles?.();
-  unsubscribeLifecycles = null;
+  unsubscribeLifecycles.forEach((stop) => stop());
+  unsubscribeLifecycles = [];
 };
 
 export default bootstrap;

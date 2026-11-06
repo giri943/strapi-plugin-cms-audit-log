@@ -51,33 +51,6 @@ export function mapEvent(name: string, payload: Payload): MappedEvent | null {
   const base: MappedEvent = { action: name, category };
 
   switch (category) {
-    case 'media': {
-      if (name.startsWith('media-folder.')) {
-        const folder = asRecord(payload?.folder);
-        return {
-          ...base,
-          targetUid: 'plugin::upload.folder',
-          targetId: idOf(folder),
-          targetLabel: entryLabel(folder),
-          details: { path: folder?.path },
-        };
-      }
-
-      const media = asRecord(payload?.media);
-      return {
-        ...base,
-        targetUid: 'plugin::upload.file',
-        targetId: idOf(media),
-        targetLabel: entryLabel(media),
-        details: {
-          mime: media?.mime,
-          size: media?.size,
-          ext: media?.ext,
-          folderPath: media?.folderPath,
-        },
-      };
-    }
-
     case 'auth': {
       const user = asRecord(payload?.user);
       return {

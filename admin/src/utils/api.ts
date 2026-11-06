@@ -4,7 +4,7 @@ import { PLUGIN_ID } from '../pluginId';
 /** Strapi mounts plugin admin routes at `/{pluginId}/…`. */
 const base = `/${PLUGIN_ID}`;
 
-export type Category = 'content' | 'media' | 'auth' | 'admin-user' | 'role' | 'schema' | 'audit';
+export type Category = 'content' | 'media' | 'auth' | 'admin-user' | 'role' | 'schema' | 'settings' | 'audit';
 export type Outcome = 'success' | 'failure';
 export type ActorType = 'admin' | 'api-token' | 'end-user' | 'system' | 'anonymous';
 export type Integrity = 'valid' | 'invalid' | 'unsigned' | 'unverifiable';

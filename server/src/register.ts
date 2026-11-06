@@ -26,6 +26,8 @@ const register = ({ strapi }: { strapi: Core.Strapi }) => {
 
   strapi.server.use(strapi.plugin(PLUGIN_NAME).service('capture').loginFailureMiddleware());
   strapi.server.use(strapi.plugin(PLUGIN_NAME).service('capture').permissionsMiddleware());
+  strapi.server.use(strapi.plugin(PLUGIN_NAME).service('capture').settingsMiddleware());
+  strapi.server.use(strapi.plugin(PLUGIN_NAME).service('capture').mediaMoveMiddleware());
 };
 
 export default register;
