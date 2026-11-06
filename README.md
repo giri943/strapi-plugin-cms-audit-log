@@ -15,7 +15,7 @@ Works with Strapi 5 (tested on 5.0, 5.42 and 5.61). Strapi 4 is not supported.
 
 <p align="center">
   <a href="https://github.com/giri943/strapi-plugin-cms-audit-log/blob/main/assets/video/audit-log-light.mp4">
-    <img src="https://raw.githubusercontent.com/giri943/strapi-plugin-cms-audit-log/main/assets/video/audit-log-light-poster.jpg" alt="Watch the Audit Log for Strapi 5 demo video" width="720">
+    <img src="https://raw.githubusercontent.com/giri943/strapi-plugin-cms-audit-log/main/assets/video/audit-log-light.webp" alt="Demo: an edit, a publish and a tamper check in the Audit Log dashboard" width="800">
   </a>
 </p>
 

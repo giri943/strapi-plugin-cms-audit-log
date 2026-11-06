@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.5
+
+- README: the demo now plays on its own, on both npm and GitHub, as a looping animated image. Click it for the full video.
+
 ## 1.0.4
 
 - README: a demo video near the top.
