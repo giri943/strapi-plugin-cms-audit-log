@@ -1,0 +1,5 @@
+{
+  "cms-audit-log.plugin.name": "Audit Log",
+  "cms-audit-log.settings.section": "Audit Log",
+  "cms-audit-log.settings.title": "Configuration"
+}

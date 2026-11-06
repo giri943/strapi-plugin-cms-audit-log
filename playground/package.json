@@ -1,0 +1,25 @@
+{
+  "name": "strapi-plugin-cms-audit-log-playground",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Example Strapi 5 app for trying the audit log plugin.",
+  "license": "MIT",
+  "scripts": {
+    "develop": "strapi develop",
+    "start": "strapi start",
+    "build": "strapi build"
+  },
+  "dependencies": {
+    "@strapi/plugin-users-permissions": "^5.59.0",
+    "@strapi/strapi": "^5.59.0",
+    "better-sqlite3": "11.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.3",
+    "strapi-plugin-cms-audit-log": "file:C:/Users/USER/AppData/Local/Temp/strapi-plugin-cms-audit-log-packs/strapi-plugin-cms-audit-log-0.1.0-20261106062236.tgz",
+    "styled-components": "^6.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

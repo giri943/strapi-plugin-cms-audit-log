@@ -1,0 +1,169 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+############################
+# OS X
+############################
+
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+.Spotlight-V100
+.Trashes
+._*
+
+
+############################
+# Linux
+############################
+
+*~
+
+
+############################
+# Windows
+############################
+
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msm
+*.msp
+
+
+############################
+# Packages
+############################
+
+*.7z
+*.dat
+*.dmg
+*.gz
+*.iso
+*.jar
+*.rar
+*.tar
+*.zip
+*.com
+*.class
+*.dll
+*.exe
+*.o
+*.seed
+*.so
+*.swo
+*.swp
+*.swn
+*.swm
+*.out
+*.pid
+
+
+############################
+# Data exports
+############################
+
+# Exported content is real data and must never be committed. Test fixtures are the
+# one exception and are re-included below.
+*.csv
+*.tsv
+*.xlsx
+!server/tests/fixtures/**/*.csv
+!playground/fixtures/**/*.csv
+
+
+############################
+# Logs and databases
+############################
+
+.tmp
+*.log
+*.sql
+*.sqlite
+*.sqlite3
+*.db
+
+
+############################
+# Misc.
+############################
+
+*#
+ssl
+.idea
+nbproject
+.tsbuildinfo
+.eslintcache
+.env
+
+
+############################
+# Strapi
+############################
+
+public/uploads/*
+!public/uploads/.gitkeep
+
+
+############################
+# Build
+############################
+
+dist
+build
+
+# Local tarballs from `npm pack`, used to install the plugin into a test project
+*.tgz
+
+# Compiled JS artifacts that may land in src directories during a bad build
+server/src/**/*.js
+admin/src/**/*.js
+
+
+############################
+# Node.js
+############################
+
+lib-cov
+lcov.info
+pids
+logs
+results
+node_modules
+.node_history
+
+
+############################
+# Package managers
+############################
+
+.yarn/*
+!.yarn/cache
+!.yarn/unplugged
+!.yarn/patches
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+yarn-error.log
+
+
+############################
+# Tests
+############################
+
+coverage
+
+
+############################
+# Editor / tool local state
+############################
+
+.claude/
+.kiro/
+
+# Old-Strapi compatibility check app
+.compat-*/

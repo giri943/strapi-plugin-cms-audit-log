@@ -1,0 +1,26 @@
+{
+  "extends": "@strapi/typescript-utils/tsconfigs/server",
+  "include": ["./src"],
+  "compilerOptions": {
+    "rootDir": "../",
+    /**
+     * Strapi's server preset uses `moduleResolution: "Node"` (node10), which TypeScript 6
+     * deprecates and TypeScript 7 removes. `tsc` only typechecks here (the bundle is built by
+     * `strapi-plugin build`), so Node16 resolution, which follows package `exports` the way
+     * Node does, is the accurate replacement.
+     */
+    "module": "Node16",
+    "moduleResolution": "Node16",
+    /**
+     * The Strapi preset ships `strict: false`. Without `strictNullChecks`, narrowing a
+     * discriminated union by its `ok` flag silently stops working, which is the shape every
+     * validation result in this plugin uses.
+     */
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noUncheckedIndexedAccess": false,
+    "lib": ["ES2021"],
+    "target": "ES2021"
+  }
+}

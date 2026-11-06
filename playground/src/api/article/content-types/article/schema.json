@@ -1,0 +1,109 @@
+{
+  "kind": "collectionType",
+  "collectionName": "articles",
+  "info": {
+    "singularName": "article",
+    "pluralName": "articles",
+    "displayName": "Article",
+    "description": "Exercises every attribute kind the CSV plugin supports."
+  },
+  "options": {
+    "draftAndPublish": true
+  },
+  "pluginOptions": {},
+  "attributes": {
+    "title": {
+      "type": "string",
+      "required": true,
+      "maxLength": 120
+    },
+    "slug": {
+      "type": "uid",
+      "targetField": "title"
+    },
+    "body": {
+      "type": "text"
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 50
+    },
+    "views": {
+      "type": "integer",
+      "min": 0
+    },
+    "rating": {
+      "type": "decimal"
+    },
+    "bigCounter": {
+      "type": "biginteger"
+    },
+    "featured": {
+      "type": "boolean",
+      "default": false
+    },
+    "state": {
+      "type": "enumeration",
+      "enum": ["draft", "review", "live"],
+      "default": "draft"
+    },
+    "publishDate": {
+      "type": "date"
+    },
+    "readAt": {
+      "type": "datetime"
+    },
+    "startsAt": {
+      "type": "time"
+    },
+    "metadata": {
+      "type": "json"
+    },
+    "internalNote": {
+      "type": "string",
+      "private": true
+    },
+    "seo": {
+      "type": "component",
+      "component": "shared.seo",
+      "repeatable": false
+    },
+    "faq": {
+      "type": "component",
+      "component": "shared.faq",
+      "repeatable": true
+    },
+    "sections": {
+      "type": "dynamiczone",
+      "components": ["blocks.hero", "blocks.cta"]
+    },
+    "author": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::author.author",
+      "inversedBy": "articles"
+    },
+    "tags": {
+      "type": "relation",
+      "relation": "manyToMany",
+      "target": "api::tag.tag",
+      "inversedBy": "articles"
+    },
+    "category": {
+      "type": "relation",
+      "relation": "manyToOne",
+      "target": "api::category.category",
+      "inversedBy": "articles"
+    },
+    "cover": {
+      "type": "media",
+      "multiple": false,
+      "allowedTypes": ["images"]
+    },
+    "gallery": {
+      "type": "media",
+      "multiple": true,
+      "allowedTypes": ["images", "files"]
+    }
+  }
+}

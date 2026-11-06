@@ -1,0 +1,16 @@
+{
+  "collectionName": "components_blocks_ctas",
+  "info": {
+    "displayName": "Cta",
+    "icon": "cursor"
+  },
+  "options": {},
+  "attributes": {
+    "label": {
+      "type": "string"
+    },
+    "url": {
+      "type": "string"
+    }
+  }
+}

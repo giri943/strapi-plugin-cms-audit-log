@@ -1,0 +1,105 @@
+{
+  "name": "strapi-plugin-cms-audit-log",
+  "version": "0.1.0",
+  "description": "Audit log for Strapi 5: records who changed what in the CMS, with a filterable dashboard, before/after diffs, tamper-evident signatures and CSV export.",
+  "license": "MIT",
+  "author": "girish-soman",
+  "keywords": [
+    "strapi",
+    "strapi-plugin",
+    "strapi5",
+    "audit",
+    "audit-log",
+    "audit-trail",
+    "activity-log",
+    "history",
+    "security",
+    "compliance",
+    "owasp",
+    "csv-export"
+  ],
+  "type": "commonjs",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "exports": {
+    "./package.json": "./package.json",
+    "./strapi-admin": {
+      "types": "./dist/admin/src/index.d.ts",
+      "source": "./admin/src/index.ts",
+      "import": "./dist/admin/index.mjs",
+      "require": "./dist/admin/index.js",
+      "default": "./dist/admin/index.js"
+    },
+    "./strapi-server": {
+      "types": "./dist/server/src/index.d.ts",
+      "source": "./server/src/index.ts",
+      "import": "./dist/server/index.mjs",
+      "require": "./dist/server/index.js",
+      "default": "./dist/server/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "docs",
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "strapi-plugin build",
+    "prepublishOnly": "strapi-plugin build",
+    "watch": "strapi-plugin watch",
+    "watch:link": "strapi-plugin watch:link",
+    "verify": "strapi-plugin verify",
+    "pack:local": "node scripts/pack-local.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:ts:front": "npx tsc -p admin/tsconfig.json --noEmit",
+    "test:ts:back": "npx tsc -p server/tsconfig.json --noEmit",
+    "test:ts:tests": "npx tsc -p server/tsconfig.test.json --noEmit",
+    "check": "npm run test:ts:back && npm run test:ts:front && npm run test:ts:tests && npm run test && npm run build"
+  },
+  "dependencies": {
+    "csv-stringify": "^6.9.0"
+  },
+  "devDependencies": {
+    "@strapi/design-system": "^2.2.4",
+    "@strapi/icons": "^2.2.4",
+    "@strapi/sdk-plugin": "^6.1.1",
+    "@strapi/strapi": "^5.59.0",
+    "@strapi/typescript-utils": "^5.59.0",
+    "@strapi/utils": "^5.59.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "prettier": "^3.8.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-intl": "^6.8.9",
+    "react-router-dom": "^6.30.3",
+    "styled-components": "^6.4.0",
+    "typescript": "^5.6.0",
+    "vitest": "3.2.7"
+  },
+  "peerDependencies": {
+    "@strapi/design-system": "^2.0.0",
+    "@strapi/icons": "^2.0.0",
+    "@strapi/strapi": "^5.0.0",
+    "@strapi/utils": "^5.0.0",
+    "react": "^18.0.0",
+    "react-dom": "^18.0.0",
+    "react-router-dom": "^6.0.0",
+    "styled-components": "^6.0.0"
+  },
+  "strapi": {
+    "kind": "plugin",
+    "name": "cms-audit-log",
+    "displayName": "Audit Log",
+    "description": "Who changed what, and when. Filterable activity dashboard with before/after diffs and CSV export."
+  },
+  "peerDependenciesMeta": {
+    "@strapi/utils": {
+      "optional": true
+    }
+  }
+}
